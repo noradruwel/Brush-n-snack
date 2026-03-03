@@ -27,14 +27,14 @@ Messages are newline-terminated (`\n`) and use **prefixes** so each device knows
 
 ### Slave MegaPi — Robot Arm + LEDs
 
-| Slot / Port | Component    | Purpose              |
-|-------------|--------------|----------------------|
-| SLOT1       | `armMotor1`  | Arm joint 1 (base)   |
-| SLOT2       | `armMotor2`  | Arm joint 2 (shoulder) |
-| SLOT3       | `armMotor3`  | Arm joint 3 (elbow)  |
-| SLOT4       | `armMotor4`  | Arm joint 4 (gripper)|
-| PORT_5      | `led1`       | LED strip connector 1 (4 LEDs) |
-| PORT_6      | `led2`       | LED strip connector 2 (4 LEDs) |
+| Slot / Port | Component    | Type                | Purpose              |
+|-------------|--------------|---------------------|----------------------|
+| SLOT1       | `armMotor1`  | Encoder motor       | Arm joint 1 (base)   |
+| SLOT2       | `armMotor2`  | Encoder motor       | Arm joint 2 (shoulder) |
+| SLOT3       | `armMotor3`  | Encoder motor       | Arm joint 3 (elbow)  |
+| PORT4A      | `gripper`    | DC motor (no encoder) | Gripper open/close |
+| PORT_5      | `led1`       | RGB LED strip       | LED strip connector 1 (4 LEDs) |
+| PORT_6      | `led2`       | RGB LED strip       | LED strip connector 2 (4 LEDs) |
 
 ---
 
@@ -64,16 +64,21 @@ Each device **only processes** messages with its own prefix and **ignores** the 
 
 | Command               | Example        | Description                                    |
 |-----------------------|----------------|------------------------------------------------|
-| `M:F<meters>`         | `M:F1.5`       | Drive forward 1.5 meters                       |
-| `M:B<meters>`         | `M:B0.5`       | Drive backward 0.5 meters                      |
-| `M:L[degrees]`        | `M:L` / `M:L45`| Turn left (default 90°, or specify degrees)   |
-| `M:R[degrees]`        | `M:R` / `M:R30`| Turn right (default 90°, or specify degrees)  |
+| `M:F<position>`       | `M:F1800`      | Drive forward to position (encoder degrees)    |
+| `M:B<position>`       | `M:B1800`      | Drive backward to position (encoder degrees)   |
+| `M:L[position]`       | `M:L` / `M:L180`| Turn left (default 360, or specify position)  |
+| `M:R[position]`       | `M:R` / `M:R180`| Turn right (default 360, or specify position) |
 | `M:x`                 | `M:x`          | Immediate stop (all drive motors)              |
 | `M:C<c>,<R>,<G>,<B>`  | `M:C1,255,0,0` | Set LED connector `c` to RGB (smooth, forwarded to Slave) |
-| `M:A<s>,<speed>`      | `M:A2,150`     | Set arm motor slot `s` to `speed` (forwarded to Slave)    |
-| `M:Ax`                | `M:Ax`         | Stop all arm motors (forwarded to Slave)       |
+| `M:A<s>,<speed>`      | `M:A2,150`     | Set arm motor slot `s` (1-3) to `speed` (forwarded to Slave) |
+| `M:Ax`                | `M:Ax`         | Stop all arm motors + gripper (forwarded to Slave) |
+| `M:Go`                | `M:Go`         | Open gripper (forwarded to Slave)              |
+| `M:Gc`                | `M:Gc`         | Close gripper (forwarded to Slave)             |
+| `M:Gs`                | `M:Gs`         | Stop gripper (forwarded to Slave)              |
 
-> The `C` and `A` commands are **convenience shortcuts**: the Master automatically relays them to the Slave as `S:L…` / `S:A…` / `S:x` messages.
+> The `C`, `A`, and `G` commands are **convenience shortcuts**: the Master automatically relays them to the Slave as `S:L…` / `S:A…` / `S:G…` / `S:x` messages.
+>
+> Drive commands (`F`, `B`, `L`, `R`) use `moveTo(position, speed)` — position is in encoder degrees, speed defaults to 300.
 
 ### Slave Commands (prefix `S:`)
 
@@ -83,8 +88,11 @@ These can be sent by the **phone directly** or by the **Master** internally.
 |-----------------------|------------------|----------------------------------------------|
 | `S:L<c>,<R>,<G>,<B>`  | `S:L1,0,255,0`  | Smooth LED transition on connector `c`       |
 | `S:D<c>,<R>,<G>,<B>`  | `S:D2,255,255,0`| Direct/immediate LED set on connector `c`    |
-| `S:A<s>,<speed>`      | `S:A3,-100`     | Set arm motor slot `s` (1-4) to `speed` (-200…200) |
-| `S:x`                 | `S:x`           | Stop all 4 arm motors immediately            |
+| `S:A<s>,<speed>`      | `S:A3,-100`     | Set arm motor slot `s` (1-3) to `speed` (-200…200) |
+| `S:Go`                | `S:Go`          | Open gripper (DC motor runs forward)         |
+| `S:Gc`                | `S:Gc`          | Close gripper (DC motor runs backward)       |
+| `S:Gs`                | `S:Gs`          | Stop gripper                                 |
+| `S:x`                 | `S:x`           | Stop all 3 arm motors + gripper immediately  |
 
 #### LED Modes
 
@@ -99,17 +107,23 @@ Responses are sent back on Serial3 so the phone (or other device) can confirm ac
 
 | Response          | Meaning                                |
 |-------------------|----------------------------------------|
-| `M>OK F1.5`       | Master confirmed forward 1.5 m         |
-| `M>OK B0.5`       | Master confirmed backward 0.5 m        |
+| `M>OK F1800`      | Master confirmed forward to position 1800 |
+| `M>OK B1800`      | Master confirmed backward to position 1800 |
 | `M>OK L`          | Master confirmed left turn             |
 | `M>OK R`          | Master confirmed right turn            |
 | `M>OK STOP`       | Master confirmed drive stop            |
 | `M>OK C1`         | Master confirmed LED command forwarded |
 | `M>OK A2`         | Master confirmed arm command forwarded |
 | `M>OK Ax`         | Master confirmed arm-stop forwarded    |
+| `M>OK Go`         | Master confirmed gripper open forwarded |
+| `M>OK Gc`         | Master confirmed gripper close forwarded |
+| `M>OK Gs`         | Master confirmed gripper stop forwarded |
 | `S>OK L1`         | Slave confirmed LED smooth transition  |
 | `S>OK A3`         | Slave confirmed arm motor set          |
-| `S>OK STOP`       | Slave confirmed all arms stopped       |
+| `S>OK Go`         | Slave confirmed gripper opening        |
+| `S>OK Gc`         | Slave confirmed gripper closing        |
+| `S>OK Gs`         | Slave confirmed gripper stopped        |
+| `S>OK STOP`       | Slave confirmed all arms + gripper stopped |
 
 ---
 
@@ -149,10 +163,10 @@ Master responses (`M>`) are printed on Slave USB Serial as `[Master] …` for de
 ## Example Session
 
 ```text
-Phone sends:    M:F2          → Master drives forward 2 meters
-Master replies: M>OK F2.00
+Phone sends:    M:F1800       → Master drives forward to position 1800
+Master replies: M>OK F1800.00
 
-Phone sends:    M:L           → Master turns left 90°
+Phone sends:    M:L           → Master turns left (default 360)
 Master replies: M>OK L
                                (LEDs start flickering yellow on left side)
 
@@ -163,13 +177,21 @@ Phone sends:    M:A3,-100     → Master relays arm motor 3 at speed -100
 Master replies: M>OK A3
 Slave replies:  S>OK A3
 
+Phone sends:    M:Gc          → Master relays gripper close
+Master replies: M>OK Gc
+Slave replies:  S>OK Gc
+
+Phone sends:    M:Gs          → Master relays gripper stop
+Master replies: M>OK Gs
+Slave replies:  S>OK Gs
+
 Phone sends:    S:L2,255,0,0  → Slave LED connector 2 fades to red
 Slave replies:  S>OK L2
 
 Phone sends:    M:x           → Master stops all drive motors
 Master replies: M>OK STOP
 
-Phone sends:    S:x           → Slave stops all arm motors
+Phone sends:    S:x           → Slave stops all arm motors + gripper
 Slave replies:  S>OK STOP
 ```
 

@@ -8,12 +8,7 @@ MeEncoderOnBoard motor_L2(SLOT2);
 MeEncoderOnBoard motor_R1(SLOT3);
 MeEncoderOnBoard motor_R2(SLOT1);
 
-const float WHEEL_DIAMETER = 65.0;
-const float TRACK_WIDTH = 200.0;
-const float PI_VALUE = 3.14159;
-const int ENCODER_PULSES = 360;
-const float REDUCTION_RATIO = 46.67;
-const int DRIVE_SPEED = 200;
+const int DRIVE_SPEED = 300;
 
 // Turn-signal LED state
 bool turningLeft = false;
@@ -25,10 +20,37 @@ const unsigned long FLICKER_INTERVAL = 200; // ms
 /* ==========================
    Interrupt handlers
    ========================== */
-void isr_L1() { digitalRead(motor_L1.getPortB()) ? motor_L1.pulsePosPlus() : motor_L1.pulsePosMinus(); }
-void isr_L2() { digitalRead(motor_L2.getPortB()) ? motor_L2.pulsePosPlus() : motor_L2.pulsePosMinus(); }
-void isr_R1() { digitalRead(motor_R1.getPortB()) ? motor_R1.pulsePosPlus() : motor_R1.pulsePosMinus(); }
-void isr_R2() { digitalRead(motor_R2.getPortB()) ? motor_R2.pulsePosPlus() : motor_R2.pulsePosMinus(); }
+void isr_L1()
+{
+  if(digitalRead(motor_L1.getPortB()) == 0)
+    motor_L1.pulsePosMinus();
+  else
+    motor_L1.pulsePosPlus();
+}
+
+void isr_L2()
+{
+  if(digitalRead(motor_L2.getPortB()) == 0)
+    motor_L2.pulsePosMinus();
+  else
+    motor_L2.pulsePosPlus();
+}
+
+void isr_R1()
+{
+  if(digitalRead(motor_R1.getPortB()) == 0)
+    motor_R1.pulsePosMinus();
+  else
+    motor_R1.pulsePosPlus();
+}
+
+void isr_R2()
+{
+  if(digitalRead(motor_R2.getPortB()) == 0)
+    motor_R2.pulsePosMinus();
+  else
+    motor_R2.pulsePosPlus();
+}
 
 /* ==========================
    Slave Communication (Serial3)
@@ -48,12 +70,25 @@ void sendLedSmooth(byte connector, byte r, byte g, byte b) {
   sendToSlave("L" + String(connector) + "," + String(r) + "," + String(g) + "," + String(b));
 }
 
-// Arm motor speed: slot 1-4, speed -200..200
+// Arm motor speed: slot 1-3, speed -200..200
 void sendArmSpeed(int slot, int speed) {
   sendToSlave("A" + String(slot) + "," + String(speed));
 }
 
-// Stop all arm motors on slave
+// Gripper: open/close/stop
+void sendGripperOpen() {
+  sendToSlave("Go");
+}
+
+void sendGripperClose() {
+  sendToSlave("Gc");
+}
+
+void sendGripperStop() {
+  sendToSlave("Gs");
+}
+
+// Stop all arm motors + gripper on slave
 void sendArmStopAll() {
   sendToSlave("x");
 }
@@ -98,40 +133,28 @@ void updateLeds(bool forceUpdate) {
 }
 
 /* ==========================
-   Motion Logic
+   Motion Logic (moveTo position-based)
    ========================== */
-void moveMeters(float meters) {
+void moveDrive(long position, int speed) {
   turningLeft = false;
   turningRight = false;
   updateLeds(true);
 
-  long targetPulses = (meters * 1000.0 / (WHEEL_DIAMETER * PI_VALUE)) * ENCODER_PULSES * REDUCTION_RATIO;
-
-  motor_L1.move(-targetPulses, DRIVE_SPEED);
-  motor_L2.move(-targetPulses, DRIVE_SPEED);
-  motor_R1.move(targetPulses, DRIVE_SPEED);
-  motor_R2.move(targetPulses, DRIVE_SPEED);
+  motor_L1.moveTo(-position, speed);
+  motor_L2.moveTo(-position, speed);
+  motor_R1.moveTo(position, speed);
+  motor_R2.moveTo(position, speed);
 }
 
-void rotateDegrees(float degrees) {
-  turningLeft = (degrees < 0);
-  turningRight = (degrees > 0);
+void turnDrive(long position, int speed) {
+  turningLeft = (position < 0);
+  turningRight = (position > 0);
   updateLeds(true);
 
-  float arcLength = (abs(degrees) * PI_VALUE * TRACK_WIDTH) / 360.0;
-  long targetPulses = (arcLength / (WHEEL_DIAMETER * PI_VALUE)) * ENCODER_PULSES * REDUCTION_RATIO;
-
-  if (degrees < 0) {
-    motor_L1.move(targetPulses, DRIVE_SPEED);
-    motor_L2.move(targetPulses, DRIVE_SPEED);
-    motor_R1.move(targetPulses, DRIVE_SPEED);
-    motor_R2.move(targetPulses, DRIVE_SPEED);
-  } else {
-    motor_L1.move(-targetPulses, DRIVE_SPEED);
-    motor_L2.move(-targetPulses, DRIVE_SPEED);
-    motor_R1.move(-targetPulses, DRIVE_SPEED);
-    motor_R2.move(-targetPulses, DRIVE_SPEED);
-  }
+  motor_L1.moveTo(position, speed);
+  motor_L2.moveTo(position, speed);
+  motor_R1.moveTo(position, speed);
+  motor_R2.moveTo(position, speed);
 }
 
 void stopDrive() {
@@ -139,8 +162,10 @@ void stopDrive() {
   turningRight = false;
   updateLeds(true);
 
-  motor_L1.setTarPWM(0); motor_L2.setTarPWM(0);
-  motor_R1.setTarPWM(0); motor_R2.setTarPWM(0);
+  motor_L1.setMotorPwm(0);
+  motor_L2.setMotorPwm(0);
+  motor_R1.setMotorPwm(0);
+  motor_R2.setMotorPwm(0);
 }
 
 /* ==========================
@@ -155,22 +180,22 @@ void processCommand(const String &input) {
 
   switch (cmd) {
     case 'F':
-      moveMeters(val);
+      moveDrive((long)val, DRIVE_SPEED);
       Serial3.println("M>OK F" + String(val));
       break;
 
     case 'B':
-      moveMeters(-val);
+      moveDrive(-(long)val, DRIVE_SPEED);
       Serial3.println("M>OK B" + String(val));
       break;
 
     case 'L':
-      rotateDegrees(val == 0 ? -90 : -val);
+      turnDrive(val == 0 ? -360 : -(long)val, DRIVE_SPEED);
       Serial3.println("M>OK L");
       break;
 
     case 'R':
-      rotateDegrees(val == 0 ? 90 : val);
+      turnDrive(val == 0 ? 360 : (long)val, DRIVE_SPEED);
       Serial3.println("M>OK R");
       break;
 
@@ -198,7 +223,7 @@ void processCommand(const String &input) {
     }
 
     case 'A': {
-      // Arm motor: A<slot>,<speed> or Ax (stop all)
+      // Arm motor: A<slot>,<speed> or Ax (stop all), slots 1-3
       if (input.length() > 1 && input.charAt(1) == 'x') {
         sendArmStopAll();
         Serial3.println("M>OK Ax");
@@ -209,6 +234,24 @@ void processCommand(const String &input) {
           int speed = input.substring(comma + 1).toInt();
           sendArmSpeed(slot, speed);
           Serial3.println("M>OK A" + String(slot));
+        }
+      }
+      break;
+    }
+
+    case 'G': {
+      // Gripper: Go = open, Gc = close, Gs = stop
+      if (input.length() > 1) {
+        char action = input.charAt(1);
+        if (action == 'o') {
+          sendGripperOpen();
+          Serial3.println("M>OK Go");
+        } else if (action == 'c') {
+          sendGripperClose();
+          Serial3.println("M>OK Gc");
+        } else if (action == 's') {
+          sendGripperStop();
+          Serial3.println("M>OK Gs");
         }
       }
       break;
@@ -229,10 +272,16 @@ void setup() {
   attachInterrupt(motor_R1.getIntNum(), isr_R1, RISING);
   attachInterrupt(motor_R2.getIntNum(), isr_R2, RISING);
 
+  //Set PWM 8KHz
+  TCCR1A = _BV(WGM10);
+  TCCR1B = _BV(CS11) | _BV(WGM12);
+  TCCR2A = _BV(WGM21) | _BV(WGM20);
+  TCCR2B = _BV(CS21);
+
   MeEncoderOnBoard* motors[] = {&motor_L1, &motor_L2, &motor_R1, &motor_R2};
   for (int i = 0; i < 4; i++) {
-    motors[i]->setPulse(ENCODER_PULSES);
-    motors[i]->setRatio(REDUCTION_RATIO);
+    motors[i]->setPulse(7);
+    motors[i]->setRatio(26.9);
     motors[i]->setPosPid(1.8, 0, 1.2);
     motors[i]->setSpeedPid(0.18, 0, 0);
   }

@@ -7,13 +7,16 @@
 MeRGBLed led1(PORT_5);  // Connector 1: 4 LEDs
 MeRGBLed led2(PORT_6);  // Connector 2: 4 LEDs
 
-// 4 Arm Motors (robot arm joints)
+// 3 Arm Motors (robot arm joints, encoder-based)
 MeEncoderOnBoard armMotor1(SLOT1);
 MeEncoderOnBoard armMotor2(SLOT2);
 MeEncoderOnBoard armMotor3(SLOT3);
-MeEncoderOnBoard armMotor4(SLOT4);
+
+// Gripper DC motor (no encoder, just open/close)
+MeMegaPiDCMotor gripper(PORT4A);
 
 const int MAX_ARM_SPEED = 200;
+const int GRIPPER_SPEED = 100;
 
 // LED state
 byte colors[2][3] = { {0, 0, 255}, {0, 0, 255} };       // Current
@@ -22,12 +25,31 @@ unsigned long lastTransitionTime = 0;
 const unsigned long TRANSITION_INTERVAL = 10; // ms
 
 /* ==========================
-   Interrupt handlers (4 arm motors)
+   Interrupt handlers (3 arm encoder motors)
    ========================== */
-void isr_Arm1() { digitalRead(armMotor1.getPortB()) ? armMotor1.pulsePosPlus() : armMotor1.pulsePosMinus(); }
-void isr_Arm2() { digitalRead(armMotor2.getPortB()) ? armMotor2.pulsePosPlus() : armMotor2.pulsePosMinus(); }
-void isr_Arm3() { digitalRead(armMotor3.getPortB()) ? armMotor3.pulsePosPlus() : armMotor3.pulsePosMinus(); }
-void isr_Arm4() { digitalRead(armMotor4.getPortB()) ? armMotor4.pulsePosPlus() : armMotor4.pulsePosMinus(); }
+void isr_Arm1()
+{
+  if(digitalRead(armMotor1.getPortB()) == 0)
+    armMotor1.pulsePosMinus();
+  else
+    armMotor1.pulsePosPlus();
+}
+
+void isr_Arm2()
+{
+  if(digitalRead(armMotor2.getPortB()) == 0)
+    armMotor2.pulsePosMinus();
+  else
+    armMotor2.pulsePosPlus();
+}
+
+void isr_Arm3()
+{
+  if(digitalRead(armMotor3.getPortB()) == 0)
+    armMotor3.pulsePosMinus();
+  else
+    armMotor3.pulsePosPlus();
+}
 
 /* ==========================
    Arm Motor Control
@@ -37,7 +59,6 @@ MeEncoderOnBoard* getArmMotor(int slot) {
     case 1: return &armMotor1;
     case 2: return &armMotor2;
     case 3: return &armMotor3;
-    case 4: return &armMotor4;
     default: return nullptr;
   }
 }
@@ -54,7 +75,22 @@ void stopAllArms() {
   armMotor1.setTarPWM(0);
   armMotor2.setTarPWM(0);
   armMotor3.setTarPWM(0);
-  armMotor4.setTarPWM(0);
+  gripper.stop();
+}
+
+/* ==========================
+   Gripper Control
+   ========================== */
+void gripperOpen() {
+  gripper.run(GRIPPER_SPEED);
+}
+
+void gripperClose() {
+  gripper.run(-GRIPPER_SPEED);
+}
+
+void gripperStop() {
+  gripper.stop();
 }
 
 /* ==========================
@@ -151,12 +187,12 @@ void processCommand(const String &input) {
     }
 
     case 'A': {
-      // Arm motor speed: A<slot>,<speed>
+      // Arm motor speed: A<slot>,<speed>  (slots 1-3 only)
       int comma = input.indexOf(',');
       if (comma > 0) {
         int slot  = input.substring(1, comma).toInt();
         int speed = input.substring(comma + 1).toInt();
-        if (slot >= 1 && slot <= 4) {
+        if (slot >= 1 && slot <= 3) {
           setArmSpeed(slot, speed);
           Serial3.println("S>OK A" + String(slot));
         }
@@ -164,8 +200,26 @@ void processCommand(const String &input) {
       break;
     }
 
+    case 'G': {
+      // Gripper: Go = open, Gc = close, Gs = stop
+      if (input.length() > 1) {
+        char action = input.charAt(1);
+        if (action == 'o') {
+          gripperOpen();
+          Serial3.println("S>OK Go");
+        } else if (action == 'c') {
+          gripperClose();
+          Serial3.println("S>OK Gc");
+        } else if (action == 's') {
+          gripperStop();
+          Serial3.println("S>OK Gs");
+        }
+      }
+      break;
+    }
+
     case 'x':
-      // Stop all arm motors
+      // Stop all arm motors + gripper
       stopAllArms();
       Serial3.println("S>OK STOP");
       break;
@@ -180,17 +234,22 @@ void setup() {
   Serial3.begin(115200);
   Serial3.setTimeout(10);
 
-  // Attach interrupts for all 4 arm motors
+  // Attach interrupts for 3 arm encoder motors
   attachInterrupt(armMotor1.getIntNum(), isr_Arm1, RISING);
   attachInterrupt(armMotor2.getIntNum(), isr_Arm2, RISING);
   attachInterrupt(armMotor3.getIntNum(), isr_Arm3, RISING);
-  attachInterrupt(armMotor4.getIntNum(), isr_Arm4, RISING);
 
-  // Initialize arm motor parameters
-  MeEncoderOnBoard* motors[] = {&armMotor1, &armMotor2, &armMotor3, &armMotor4};
-  for (int i = 0; i < 4; i++) {
-    motors[i]->setPulse(360);
-    motors[i]->setRatio(46.67);
+  //Set PWM 8KHz
+  TCCR1A = _BV(WGM10);
+  TCCR1B = _BV(CS11) | _BV(WGM12);
+  TCCR2A = _BV(WGM21) | _BV(WGM20);
+  TCCR2B = _BV(CS21);
+
+  // Initialize arm encoder motor parameters
+  MeEncoderOnBoard* motors[] = {&armMotor1, &armMotor2, &armMotor3};
+  for (int i = 0; i < 3; i++) {
+    motors[i]->setPulse(7);
+    motors[i]->setRatio(26.9);
     motors[i]->setPosPid(1.8, 0, 1.2);
     motors[i]->setSpeedPid(0.18, 0, 0);
   }
@@ -239,9 +298,8 @@ void loop() {
     }
   }
 
-  // PID loops for all 4 arm motors
+  // PID loops for 3 arm encoder motors
   armMotor1.loop();
   armMotor2.loop();
   armMotor3.loop();
-  armMotor4.loop();
 }
