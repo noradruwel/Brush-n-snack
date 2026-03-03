@@ -1,206 +1,200 @@
 # Brush-n-Snack — Serial Communication Protocol
 
-## Architecture Overview
+## Architecture
 
 ```
 ┌──────────┐   Bluetooth    ┌──────────────────┐   Serial3 (shared bus)   ┌──────────────────┐
 │  Phone   │ ◄────────────► │  Master MegaPi   │ ◄──────────────────────► │  Slave MegaPi    │
-│  (App)   │                │  (Drive base)    │                          │  (Arm + LEDs)    │
+│  (App)   │                │  Drive + LEDs    │                          │  Arm + Gripper   │
 └──────────┘                └──────────────────┘                          └──────────────────┘
 ```
 
-All three devices share **one serial connection** (`Serial3` @ 115200 baud).  
-Messages are newline-terminated (`\n`) and use **prefixes** so each device knows what to process and what to ignore.
+All devices share **Serial3** @ 115200 baud. Messages are newline-terminated (`\n`) with prefixes.
 
 ---
 
 ## Hardware Mapping
 
-### Master MegaPi — Drive Base
+### Master MegaPi — Drive Base + LEDs
 
-| Slot  | Motor       | Purpose       |
-|-------|-------------|---------------|
-| SLOT1 | `motor_R2`  | Right rear    |
-| SLOT2 | `motor_L2`  | Left rear     |
-| SLOT3 | `motor_R1`  | Right front   |
-| SLOT4 | `motor_L1`  | Left front    |
+| Slot / Port | Component   | Type          | Purpose       |
+|-------------|-------------|---------------|---------------|
+| SLOT1       | `motor_R2`  | Encoder motor | Right rear    |
+| SLOT2       | `motor_L2`  | Encoder motor | Left rear     |
+| SLOT3       | `motor_R1`  | Encoder motor | Right front   |
+| SLOT4       | `motor_L1`  | Encoder motor | Left front    |
+| PORT_5      | `led1`      | RGB LED strip | Left (4 LEDs) |
+| PORT_6      | `led2`      | RGB LED strip | Right (4 LEDs)|
 
-### Slave MegaPi — Robot Arm + LEDs
+### Slave MegaPi — Robot Arm + Gripper
 
-| Slot / Port | Component    | Type                | Purpose              |
-|-------------|--------------|---------------------|----------------------|
-| SLOT1       | `armMotor1`  | Encoder motor       | Arm joint 1 (base)   |
-| SLOT2       | `armMotor2`  | Encoder motor       | Arm joint 2 (shoulder) |
-| SLOT3       | `armMotor3`  | Encoder motor       | Arm joint 3 (elbow)  |
-| PORT4A      | `gripper`    | DC motor (no encoder) | Gripper open/close |
-| PORT_5      | `led1`       | RGB LED strip       | LED strip connector 1 (4 LEDs) |
-| PORT_6      | `led2`       | RGB LED strip       | LED strip connector 2 (4 LEDs) |
+| Slot / Port | Component | Type                  | Purpose         |
+|-------------|----------|-----------------------|-----------------|
+| SLOT1       | `arm1`   | Encoder motor         | Base rotation   |
+| SLOT2       | `arm2`   | Encoder motor         | Shoulder        |
+| SLOT3       | `arm3`   | Encoder motor         | Elbow           |
+| PORT4A      | `gripper`| DC motor (no encoder) | Gripper open/close |
 
 ---
 
 ## Message Format
 
 ```
-<PREFIX>:<COMMAND>\n      ← commands (input)
-<PREFIX>><RESPONSE>\n     ← responses (output)
+<PREFIX>:<COMMAND>\n      ← commands
+<PREFIX>><RESPONSE>\n     ← responses
 ```
 
-### Prefixes
+| Prefix | Direction  | Meaning                     |
+|--------|------------|-----------------------------|
+| `M:`   | → Master   | Command for the Master      |
+| `S:`   | → Slave    | Command for the Slave       |
+| `M>`   | ← Master   | Response from Master        |
+| `S>`   | ← Slave    | Response from Slave         |
 
-| Prefix | Direction          | Meaning                              |
-|--------|--------------------|--------------------------------------|
-| `M:`   | → Master           | Command destined for the Master      |
-| `S:`   | → Slave            | Command destined for the Slave       |
-| `M>`   | ← Master           | Response / acknowledgment from Master|
-| `S>`   | ← Slave            | Response / acknowledgment from Slave |
-
-Each device **only processes** messages with its own prefix and **ignores** the rest.
+Each device only processes its own prefix and ignores the rest.
 
 ---
 
 ## Command Reference
 
-### Master Commands (prefix `M:`)
+### Master Commands (`M:`)
 
-| Command               | Example        | Description                                    |
-|-----------------------|----------------|------------------------------------------------|
-| `M:F<position>`       | `M:F1800`      | Drive forward to position (encoder degrees)    |
-| `M:B<position>`       | `M:B1800`      | Drive backward to position (encoder degrees)   |
-| `M:L[position]`       | `M:L` / `M:L180`| Turn left (default 360, or specify position)  |
-| `M:R[position]`       | `M:R` / `M:R180`| Turn right (default 360, or specify position) |
-| `M:x`                 | `M:x`          | Immediate stop (all drive motors)              |
-| `M:C<c>,<R>,<G>,<B>`  | `M:C1,255,0,0` | Set LED connector `c` to RGB (smooth, forwarded to Slave) |
-| `M:A<s>,<speed>`      | `M:A2,150`     | Set arm motor slot `s` (1-3) to `speed` (forwarded to Slave) |
-| `M:Ax`                | `M:Ax`         | Stop all arm motors + gripper (forwarded to Slave) |
-| `M:Go`                | `M:Go`         | Open gripper (forwarded to Slave)              |
-| `M:Gc`                | `M:Gc`         | Close gripper (forwarded to Slave)             |
-| `M:Gs`                | `M:Gs`         | Stop gripper (forwarded to Slave)              |
+| Command                   | Example           | Description                                |
+|---------------------------|-------------------|--------------------------------------------|
+| `M:F<pos>`                | `M:F1800`         | Drive forward to position (encoder degrees)|
+| `M:B<pos>`                | `M:B1800`         | Drive backward to position                 |
+| `M:L[pos]`                | `M:L` / `M:L180`  | Turn left (default 360)                   |
+| `M:R[pos]`                | `M:R` / `M:R180`  | Turn right (default 360)                  |
+| `M:x`                     | `M:x`             | Stop all drive motors                      |
+| `M:C<c>,<R>,<G>,<B>`      | `M:C1,255,0,0`   | Smooth LED fade on connector `c` (1-2)     |
+| `M:D<c>,<R>,<G>,<B>`      | `M:D2,0,255,0`   | Direct/instant LED set on connector `c`    |
+| `M:A<s>,<pos>,<spd>`      | `M:A1,360,200`   | Arm motor `s` (1-3) moveTo position at speed |
+| `M:Ax`                    | `M:Ax`            | Stop all arms + gripper (forwarded)        |
+| `M:Go`                    | `M:Go`            | Open gripper (forwarded)                   |
+| `M:Gc`                    | `M:Gc`            | Close gripper (forwarded)                  |
+| `M:Gs`                    | `M:Gs`            | Stop gripper (forwarded)                   |
 
-> The `C`, `A`, and `G` commands are **convenience shortcuts**: the Master automatically relays them to the Slave as `S:L…` / `S:A…` / `S:G…` / `S:x` messages.
->
-> Drive commands (`F`, `B`, `L`, `R`) use `moveTo(position, speed)` — position is in encoder degrees, speed defaults to 300.
+> **LEDs** (`C`, `D`) are handled locally on Master.  
+> **Arm** (`A`) and **Gripper** (`G`) commands are forwarded to Slave as `S:A…` / `S:G…` / `S:x`.  
+> Drive uses `moveTo(position, speed)` — position in encoder degrees, default speed 300.
 
-### Slave Commands (prefix `S:`)
+### Slave Commands (`S:`)
 
-These can be sent by the **phone directly** or by the **Master** internally.
+Sent by phone directly or by Master internally.
 
-| Command               | Example          | Description                                  |
-|-----------------------|------------------|----------------------------------------------|
-| `S:L<c>,<R>,<G>,<B>`  | `S:L1,0,255,0`  | Smooth LED transition on connector `c`       |
-| `S:D<c>,<R>,<G>,<B>`  | `S:D2,255,255,0`| Direct/immediate LED set on connector `c`    |
-| `S:A<s>,<speed>`      | `S:A3,-100`     | Set arm motor slot `s` (1-3) to `speed` (-200…200) |
-| `S:Go`                | `S:Go`          | Open gripper (DC motor runs forward)         |
-| `S:Gc`                | `S:Gc`          | Close gripper (DC motor runs backward)       |
-| `S:Gs`                | `S:Gs`          | Stop gripper                                 |
-| `S:x`                 | `S:x`           | Stop all 3 arm motors + gripper immediately  |
-
-#### LED Modes
-
-- **`L` (Smooth)** — Color fades gradually toward the target (~10 ms per step). Good for ambiance.
-- **`D` (Direct)** — Color changes instantly. Used internally by the Master for turn-signal blinking.
+| Command                   | Example           | Description                                |
+|---------------------------|-------------------|--------------------------------------------|
+| `S:A<s>,<pos>,<spd>`      | `S:A2,-720,150`  | Arm motor `s` (1-3) moveTo position at speed |
+| `S:Go`                    | `S:Go`            | Open gripper (DC motor forward)            |
+| `S:Gc`                    | `S:Gc`            | Close gripper (DC motor backward)          |
+| `S:Gs`                    | `S:Gs`            | Stop gripper                               |
+| `S:x`                     | `S:x`             | Stop all 3 arm motors + gripper            |
 
 ---
 
-## Response Format
+## Responses
 
-Responses are sent back on Serial3 so the phone (or other device) can confirm actions.
-
-| Response          | Meaning                                |
-|-------------------|----------------------------------------|
-| `M>OK F1800`      | Master confirmed forward to position 1800 |
-| `M>OK B1800`      | Master confirmed backward to position 1800 |
-| `M>OK L`          | Master confirmed left turn             |
-| `M>OK R`          | Master confirmed right turn            |
-| `M>OK STOP`       | Master confirmed drive stop            |
-| `M>OK C1`         | Master confirmed LED command forwarded |
-| `M>OK A2`         | Master confirmed arm command forwarded |
-| `M>OK Ax`         | Master confirmed arm-stop forwarded    |
-| `M>OK Go`         | Master confirmed gripper open forwarded |
-| `M>OK Gc`         | Master confirmed gripper close forwarded |
-| `M>OK Gs`         | Master confirmed gripper stop forwarded |
-| `S>OK L1`         | Slave confirmed LED smooth transition  |
-| `S>OK A3`         | Slave confirmed arm motor set          |
-| `S>OK Go`         | Slave confirmed gripper opening        |
-| `S>OK Gc`         | Slave confirmed gripper closing        |
-| `S>OK Gs`         | Slave confirmed gripper stopped        |
-| `S>OK STOP`       | Slave confirmed all arms + gripper stopped |
+| Response         | Meaning                               |
+|------------------|---------------------------------------|
+| `M>OK F1800`     | Master confirmed forward to pos 1800  |
+| `M>OK B1800`     | Master confirmed backward to pos 1800 |
+| `M>OK L`         | Master confirmed left turn            |
+| `M>OK R`         | Master confirmed right turn           |
+| `M>OK STOP`      | Master confirmed drive stop           |
+| `M>OK C1`        | Master confirmed LED smooth fade      |
+| `M>OK D2`        | Master confirmed LED direct set       |
+| `M>OK A1`        | Master confirmed arm command forwarded|
+| `M>OK Ax`        | Master confirmed arm-stop forwarded   |
+| `M>OK Go`        | Master confirmed gripper open         |
+| `M>OK Gc`        | Master confirmed gripper close        |
+| `M>OK Gs`        | Master confirmed gripper stop         |
+| `S>OK A2`        | Slave confirmed arm moveTo            |
+| `S>OK Go`        | Slave confirmed gripper opening       |
+| `S>OK Gc`        | Slave confirmed gripper closing       |
+| `S>OK Gs`        | Slave confirmed gripper stopped       |
+| `S>OK STOP`      | Slave confirmed all stopped           |
 
 ---
 
 ## Turn-Signal Behavior
 
-The Master automatically controls the LEDs during turns:
+Automatic during turns (Master handles LEDs locally):
 
-| State         | Connector 1 (Left) | Connector 2 (Right) |
-|---------------|---------------------|----------------------|
-| Straight      | Solid blue          | Solid blue           |
-| Turning left  | Flicker yellow/off (200ms) | Solid blue    |
-| Turning right | Solid blue          | Flicker yellow/off (200ms) |
+| State         | Left LED (conn 1)           | Right LED (conn 2)          |
+|---------------|-----------------------------|-----------------------------|
+| Straight      | Solid blue                  | Solid blue                  |
+| Turning left  | Flicker yellow/off (200 ms) | Solid blue                  |
+| Turning right | Solid blue                  | Flicker yellow/off (200 ms) |
 
-Turn signals use **direct LED set** (`D` command) for instant response and automatically reset to blue when the turn ends.
+Uses direct LED set internally. Resets to blue when turn ends.
 
 ---
 
-## USB Serial Debug
+## LED Modes
 
-Both boards also accept commands via **USB Serial** (`Serial` @ 115200 baud) for debugging:
+- **`C` (Smooth)** — Fades gradually toward target color (~10 ms per step)
+- **`D` (Direct)** — Instant color change
 
-### Master USB Serial
-- Type a command **without prefix** → treated as a Master command (e.g., `F1.5`)
-- Type `M:F1.5` → processed by Master
-- Type `S:A1,200` → forwarded to Slave over Serial3
+---
 
-### Slave USB Serial
-- Type a command **without prefix** → treated as a Slave command (e.g., `A1,200`)
-- Type `S:L1,255,0,0` → processed by Slave
-- Type `M:F1.5` → forwarded to Master over Serial3
+## USB Serial Debug (115200 baud)
 
-Slave responses (`S>`) are printed on Master USB Serial as `[Slave] …` for debugging.  
-Master responses (`M>`) are printed on Slave USB Serial as `[Master] …` for debugging.
+### Master
+- No prefix → Master command (e.g. `F1800`)
+- `M:F1800` → Master command
+- `S:A1,360,200` → forwarded to Slave
+
+### Slave
+- No prefix → Slave command (e.g. `A1,360,200`)
+- `S:A1,360,200` → Slave command
+- `M:F1800` → forwarded to Master
+
+`S>` responses appear on Master USB as `[Slave] …`  
+`M>` responses appear on Slave USB as `[Master] …`
 
 ---
 
 ## Example Session
 
 ```text
-Phone sends:    M:F1800       → Master drives forward to position 1800
-Master replies: M>OK F1800.00
+Phone sends:    M:F1800          → Drive forward to position 1800
+Master replies: M>OK F1800
 
-Phone sends:    M:L           → Master turns left (default 360)
+Phone sends:    M:L              → Turn left (default 360)
 Master replies: M>OK L
-                               (LEDs start flickering yellow on left side)
+                                  (left LEDs flicker yellow)
 
-Phone sends:    S:A1,150      → Slave arm motor 1 at speed 150
+Phone sends:    M:A1,360,200     → Arm motor 1 to position 360 at speed 200
+Master replies: M>OK A1
 Slave replies:  S>OK A1
 
-Phone sends:    M:A3,-100     → Master relays arm motor 3 at speed -100
-Master replies: M>OK A3
-Slave replies:  S>OK A3
+Phone sends:    M:A2,-720,150    → Arm motor 2 to position -720 at speed 150
+Master replies: M>OK A2
+Slave replies:  S>OK A2
 
-Phone sends:    M:Gc          → Master relays gripper close
+Phone sends:    M:Gc             → Close gripper
 Master replies: M>OK Gc
 Slave replies:  S>OK Gc
 
-Phone sends:    M:Gs          → Master relays gripper stop
+Phone sends:    M:Gs             → Stop gripper
 Master replies: M>OK Gs
 Slave replies:  S>OK Gs
 
-Phone sends:    S:L2,255,0,0  → Slave LED connector 2 fades to red
-Slave replies:  S>OK L2
+Phone sends:    M:C1,255,0,0     → Left LEDs fade to red
+Master replies: M>OK C1
 
-Phone sends:    M:x           → Master stops all drive motors
+Phone sends:    M:x              → Stop driving
 Master replies: M>OK STOP
 
-Phone sends:    S:x           → Slave stops all arm motors + gripper
+Phone sends:    S:x              → Stop all arms + gripper
 Slave replies:  S>OK STOP
 ```
 
 ---
 
-## Wiring Notes
+## Wiring
 
-- Both MegaPi boards connect their **Serial3** (TX3/RX3) to the shared serial bus
-- The **Bluetooth module** (e.g., HC-05/06) is also on the same bus
-- Baud rate: **115200** on all devices
-- All messages are **newline-terminated** (`\n`)
-- `Serial3.setTimeout(10)` is set on both boards to prevent blocking reads
+- Both MegaPi boards: **Serial3** (TX3/RX3) on shared bus
+- Bluetooth module (HC-05/06) on same bus
+- Baud: **115200**, newline-terminated (`\n`)
+- `Serial3.setTimeout(10)` on both boards

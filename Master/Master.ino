@@ -1,337 +1,304 @@
 #include <MeMegaPi.h>
 
-/* ==========================
-   Configuration
-   ========================== */
-MeEncoderOnBoard motor_L1(SLOT4);
-MeEncoderOnBoard motor_L2(SLOT2);
-MeEncoderOnBoard motor_R1(SLOT3);
-MeEncoderOnBoard motor_R2(SLOT1);
+/* ═══════════════════════════════════════
+   HARDWARE
+   ═══════════════════════════════════════ */
+// Drive motors (encoder)
+MeEncoderOnBoard motor_L1(SLOT4);   // Left front
+MeEncoderOnBoard motor_L2(SLOT2);   // Left rear
+MeEncoderOnBoard motor_R1(SLOT3);   // Right front
+MeEncoderOnBoard motor_R2(SLOT1);   // Right rear
 
-const int DRIVE_SPEED = 300;
+// LED strips (directly on Master)
+MeRGBLed led1(PORT_5);              // Left  – 4 LEDs
+MeRGBLed led2(PORT_6);              // Right – 4 LEDs
 
-// Turn-signal LED state
-bool turningLeft = false;
-bool turningRight = false;
-unsigned long lastFlickerTime = 0;
-bool flickerState = false;
-const unsigned long FLICKER_INTERVAL = 200; // ms
+/* ═══════════════════════════════════════
+   CONSTANTS
+   ═══════════════════════════════════════ */
+const int    DRIVE_SPEED       = 300;
+const int    NUM_LEDS          = 4;
+const unsigned long FLICKER_MS = 200;
+const unsigned long FADE_MS    = 10;   // ms per color step
 
-/* ==========================
-   Interrupt handlers
-   ========================== */
-void isr_L1()
-{
-  if(digitalRead(motor_L1.getPortB()) == 0)
-    motor_L1.pulsePosMinus();
-  else
-    motor_L1.pulsePosPlus();
+/* ═══════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════ */
+// Turn signals
+bool  turningLeft   = false;
+bool  turningRight  = false;
+bool  flickerState  = false;
+unsigned long lastFlicker = 0;
+
+// LED smooth-fade
+byte  curColor [2][3] = { {0,0,255}, {0,0,255} };
+byte  tgtColor [2][3] = { {0,0,255}, {0,0,255} };
+unsigned long lastFade = 0;
+
+/* ═══════════════════════════════════════
+   INTERRUPT SERVICE ROUTINES
+   ═══════════════════════════════════════ */
+void isr_L1() { digitalRead(motor_L1.getPortB()) == 0 ? motor_L1.pulsePosMinus() : motor_L1.pulsePosPlus(); }
+void isr_L2() { digitalRead(motor_L2.getPortB()) == 0 ? motor_L2.pulsePosMinus() : motor_L2.pulsePosPlus(); }
+void isr_R1() { digitalRead(motor_R1.getPortB()) == 0 ? motor_R1.pulsePosMinus() : motor_R1.pulsePosPlus(); }
+void isr_R2() { digitalRead(motor_R2.getPortB()) == 0 ? motor_R2.pulsePosMinus() : motor_R2.pulsePosPlus(); }
+
+/* ═══════════════════════════════════════
+   SLAVE COMMUNICATION  (Serial3, prefix "S:")
+   ═══════════════════════════════════════ */
+void sendSlave(const String &cmd) { Serial3.println("S:" + cmd); }
+
+// Arm: moveTo position at speed
+void sendArmMoveTo(int slot, long pos, int spd) {
+  sendSlave("A" + String(slot) + "," + String(pos) + "," + String(spd));
 }
 
-void isr_L2()
-{
-  if(digitalRead(motor_L2.getPortB()) == 0)
-    motor_L2.pulsePosMinus();
-  else
-    motor_L2.pulsePosPlus();
+// Arm: stop all + gripper
+void sendArmStopAll() { sendSlave("x"); }
+
+// Gripper
+void sendGripperOpen()  { sendSlave("Go"); }
+void sendGripperClose() { sendSlave("Gc"); }
+void sendGripperStop()  { sendSlave("Gs"); }
+
+/* ═══════════════════════════════════════
+   LED CONTROL  (local on Master)
+   ═══════════════════════════════════════ */
+void applyLed(byte conn, byte r, byte g, byte b) {
+  MeRGBLed &led = (conn == 1) ? led1 : led2;
+  for (int i = 0; i < NUM_LEDS; i++) led.setColorAt(i, r, g, b);
+  led.show();
+  curColor[conn - 1][0] = r;
+  curColor[conn - 1][1] = g;
+  curColor[conn - 1][2] = b;
 }
 
-void isr_R1()
-{
-  if(digitalRead(motor_R1.getPortB()) == 0)
-    motor_R1.pulsePosMinus();
-  else
-    motor_R1.pulsePosPlus();
+// Instant set (turn signals / direct command)
+void setLed(byte conn, byte r, byte g, byte b) {
+  applyLed(conn, r, g, b);
+  tgtColor[conn - 1][0] = r;
+  tgtColor[conn - 1][1] = g;
+  tgtColor[conn - 1][2] = b;
 }
 
-void isr_R2()
-{
-  if(digitalRead(motor_R2.getPortB()) == 0)
-    motor_R2.pulsePosMinus();
-  else
-    motor_R2.pulsePosPlus();
+// Start smooth fade
+void fadeLedTo(byte conn, byte r, byte g, byte b) {
+  tgtColor[conn - 1][0] = r;
+  tgtColor[conn - 1][1] = g;
+  tgtColor[conn - 1][2] = b;
 }
 
-/* ==========================
-   Slave Communication (Serial3)
-   All slave commands use "S:" prefix.
-   ========================== */
-void sendToSlave(const String &cmd) {
-  Serial3.println("S:" + cmd);
-}
+void updateFades() {
+  unsigned long now = millis();
+  if (now - lastFade < FADE_MS) return;
+  lastFade = now;
 
-// Direct LED set (immediate, for turn signals)
-void sendLedDirect(byte connector, byte r, byte g, byte b) {
-  sendToSlave("D" + String(connector) + "," + String(r) + "," + String(g) + "," + String(b));
-}
-
-// Smooth LED transition (for user-initiated colors)
-void sendLedSmooth(byte connector, byte r, byte g, byte b) {
-  sendToSlave("L" + String(connector) + "," + String(r) + "," + String(g) + "," + String(b));
-}
-
-// Arm motor speed: slot 1-3, speed -200..200
-void sendArmSpeed(int slot, int speed) {
-  sendToSlave("A" + String(slot) + "," + String(speed));
-}
-
-// Gripper: open/close/stop
-void sendGripperOpen() {
-  sendToSlave("Go");
-}
-
-void sendGripperClose() {
-  sendToSlave("Gc");
-}
-
-void sendGripperStop() {
-  sendToSlave("Gs");
-}
-
-// Stop all arm motors + gripper on slave
-void sendArmStopAll() {
-  sendToSlave("x");
-}
-
-/* ==========================
-   LED Turn-Signal Logic
-   ========================== */
-void updateLeds(bool forceUpdate) {
-  bool needsUpdate = forceUpdate;
-
-  if (turningLeft || turningRight) {
-    unsigned long now = millis();
-    if (now - lastFlickerTime >= FLICKER_INTERVAL) {
-      flickerState = !flickerState;
-      lastFlickerTime = now;
-      needsUpdate = true;
+  bool changed = false;
+  for (int c = 0; c < 2; c++) {
+    for (int i = 0; i < 3; i++) {
+      if      (curColor[c][i] < tgtColor[c][i]) { curColor[c][i]++; changed = true; }
+      else if (curColor[c][i] > tgtColor[c][i]) { curColor[c][i]--; changed = true; }
     }
   }
+  if (changed) {
+    applyLed(1, curColor[0][0], curColor[0][1], curColor[0][2]);
+    applyLed(2, curColor[1][0], curColor[1][1], curColor[1][2]);
+  }
+}
 
-  if (!needsUpdate) return;
+/* ═══════════════════════════════════════
+   TURN-SIGNAL LOGIC
+   ═══════════════════════════════════════ */
+void updateTurnSignals(bool force) {
+  if (!force && !turningLeft && !turningRight) return;
 
-  byte c1R, c1G, c1B, c2R, c2G, c2B;
+  bool tick = false;
+  if (turningLeft || turningRight) {
+    unsigned long now = millis();
+    if (now - lastFlicker >= FLICKER_MS) {
+      flickerState = !flickerState;
+      lastFlicker = now;
+      tick = true;
+    }
+  }
+  if (!force && !tick) return;
 
   if (turningLeft) {
-    // Left connector flickers yellow, right stays blue
-    if (flickerState) { c1R = 255; c1G = 255; c1B = 0; }
-    else              { c1R = 0;   c1G = 0;   c1B = 0; }
-    c2R = 0; c2G = 0; c2B = 255;
+    setLed(1, flickerState ? 255 : 0, flickerState ? 255 : 0, 0);
+    setLed(2, 0, 0, 255);
   } else if (turningRight) {
-    // Right connector flickers yellow, left stays blue
-    c1R = 0; c1G = 0; c1B = 255;
-    if (flickerState) { c2R = 255; c2G = 255; c2B = 0; }
-    else              { c2R = 0;   c2G = 0;   c2B = 0; }
+    setLed(1, 0, 0, 255);
+    setLed(2, flickerState ? 255 : 0, flickerState ? 255 : 0, 0);
   } else {
-    // Solid blue
-    c1R = 0; c1G = 0; c1B = 255;
-    c2R = 0; c2G = 0; c2B = 255;
+    setLed(1, 0, 0, 255);
+    setLed(2, 0, 0, 255);
   }
-
-  sendLedDirect(1, c1R, c1G, c1B);
-  sendLedDirect(2, c2R, c2G, c2B);
 }
 
-/* ==========================
-   Motion Logic (moveTo position-based)
-   ========================== */
-void moveDrive(long position, int speed) {
-  turningLeft = false;
-  turningRight = false;
-  updateLeds(true);
-
-  motor_L1.moveTo(-position, speed);
-  motor_L2.moveTo(-position, speed);
-  motor_R1.moveTo(position, speed);
-  motor_R2.moveTo(position, speed);
+/* ═══════════════════════════════════════
+   DRIVE LOGIC  (moveTo position-based)
+   ═══════════════════════════════════════ */
+void moveDrive(long pos, int spd) {
+  turningLeft = turningRight = false;
+  updateTurnSignals(true);
+  motor_L1.moveTo(-pos, spd);
+  motor_L2.moveTo(-pos, spd);
+  motor_R1.moveTo( pos, spd);
+  motor_R2.moveTo( pos, spd);
 }
 
-void turnDrive(long position, int speed) {
-  turningLeft = (position < 0);
-  turningRight = (position > 0);
-  updateLeds(true);
-
-  motor_L1.moveTo(position, speed);
-  motor_L2.moveTo(position, speed);
-  motor_R1.moveTo(position, speed);
-  motor_R2.moveTo(position, speed);
+void turnDrive(long pos, int spd) {
+  turningLeft  = (pos < 0);
+  turningRight = (pos > 0);
+  updateTurnSignals(true);
+  motor_L1.moveTo(pos, spd);
+  motor_L2.moveTo(pos, spd);
+  motor_R1.moveTo(pos, spd);
+  motor_R2.moveTo(pos, spd);
 }
 
 void stopDrive() {
-  turningLeft = false;
-  turningRight = false;
-  updateLeds(true);
-
+  turningLeft = turningRight = false;
+  updateTurnSignals(true);
   motor_L1.setMotorPwm(0);
   motor_L2.setMotorPwm(0);
   motor_R1.setMotorPwm(0);
   motor_R2.setMotorPwm(0);
 }
 
-/* ==========================
-   Command Processing
-   ========================== */
-void processCommand(const String &input) {
-  if (input.length() == 0) return;
-
-  char cmd = input.charAt(0);
-  float val = 0;
-  if (input.length() > 1) val = input.substring(1).toFloat();
+/* ═══════════════════════════════════════
+   COMMAND PROCESSING
+   ═══════════════════════════════════════ */
+void processCommand(const String &in) {
+  if (in.length() == 0) return;
+  char cmd = in.charAt(0);
+  float val = (in.length() > 1) ? in.substring(1).toFloat() : 0;
 
   switch (cmd) {
-    case 'F':
-      moveDrive((long)val, DRIVE_SPEED);
-      Serial3.println("M>OK F" + String(val));
-      break;
 
-    case 'B':
-      moveDrive(-(long)val, DRIVE_SPEED);
-      Serial3.println("M>OK B" + String(val));
-      break;
+    /* ── Drive ───────────────────────── */
+    case 'F': moveDrive( (long)val, DRIVE_SPEED);                    Serial3.println("M>OK F" + String((long)val)); break;
+    case 'B': moveDrive(-(long)val, DRIVE_SPEED);                    Serial3.println("M>OK B" + String((long)val)); break;
+    case 'L': turnDrive(val == 0 ? -360 : -(long)val, DRIVE_SPEED); Serial3.println("M>OK L");                     break;
+    case 'R': turnDrive(val == 0 ?  360 :  (long)val, DRIVE_SPEED); Serial3.println("M>OK R");                     break;
+    case 'x': stopDrive();                                           Serial3.println("M>OK STOP");                  break;
 
-    case 'L':
-      turnDrive(val == 0 ? -360 : -(long)val, DRIVE_SPEED);
-      Serial3.println("M>OK L");
+    /* ── LEDs (local) ────────────────── */
+    case 'C': {  // Smooth fade: C<conn>,<R>,<G>,<B>
+      int p1 = in.indexOf(','), p2 = in.indexOf(',', p1+1), p3 = in.indexOf(',', p2+1);
+      if (p1 > 0 && p2 > p1 && p3 > p2) {
+        byte conn = in.substring(1, p1).toInt();
+        byte r = in.substring(p1+1, p2).toInt(), g = in.substring(p2+1, p3).toInt(), b = in.substring(p3+1).toInt();
+        if (conn == 1 || conn == 2) { fadeLedTo(conn, r, g, b); Serial3.println("M>OK C" + String(conn)); }
+      }
       break;
-
-    case 'R':
-      turnDrive(val == 0 ? 360 : (long)val, DRIVE_SPEED);
-      Serial3.println("M>OK R");
-      break;
-
-    case 'x':
-      stopDrive();
-      Serial3.println("M>OK STOP");
-      break;
-
-    case 'C': {
-      // LED color: C<connector>,<R>,<G>,<B>  → forwarded as smooth transition
-      int c1 = input.indexOf(',');
-      int c2 = input.indexOf(',', c1 + 1);
-      int c3 = input.indexOf(',', c2 + 1);
-      if (c1 > 0 && c2 > c1 && c3 > c2) {
-        byte connector = input.substring(1, c1).toInt();
-        byte r = input.substring(c1 + 1, c2).toInt();
-        byte g = input.substring(c2 + 1, c3).toInt();
-        byte b = input.substring(c3 + 1).toInt();
-        if (connector == 1 || connector == 2) {
-          sendLedSmooth(connector, r, g, b);
-          Serial3.println("M>OK C" + String(connector));
-        }
+    }
+    case 'D': {  // Direct set: D<conn>,<R>,<G>,<B>
+      int p1 = in.indexOf(','), p2 = in.indexOf(',', p1+1), p3 = in.indexOf(',', p2+1);
+      if (p1 > 0 && p2 > p1 && p3 > p2) {
+        byte conn = in.substring(1, p1).toInt();
+        byte r = in.substring(p1+1, p2).toInt(), g = in.substring(p2+1, p3).toInt(), b = in.substring(p3+1).toInt();
+        if (conn == 1 || conn == 2) { setLed(conn, r, g, b); Serial3.println("M>OK D" + String(conn)); }
       }
       break;
     }
 
+    /* ── Arm (forwarded to Slave) ────── */
     case 'A': {
-      // Arm motor: A<slot>,<speed> or Ax (stop all), slots 1-3
-      if (input.length() > 1 && input.charAt(1) == 'x') {
+      if (in.length() > 1 && in.charAt(1) == 'x') {
         sendArmStopAll();
         Serial3.println("M>OK Ax");
       } else {
-        int comma = input.indexOf(',');
-        if (comma > 0) {
-          int slot  = input.substring(1, comma).toInt();
-          int speed = input.substring(comma + 1).toInt();
-          sendArmSpeed(slot, speed);
+        // A<slot>,<position>,<speed>
+        int c1 = in.indexOf(','), c2 = in.indexOf(',', c1+1);
+        if (c1 > 0 && c2 > c1) {
+          int  slot = in.substring(1, c1).toInt();
+          long pos  = atol(in.substring(c1+1, c2).c_str());
+          int  spd  = in.substring(c2+1).toInt();
+          sendArmMoveTo(slot, pos, spd);
           Serial3.println("M>OK A" + String(slot));
         }
       }
       break;
     }
 
+    /* ── Gripper (forwarded to Slave) ── */
     case 'G': {
-      // Gripper: Go = open, Gc = close, Gs = stop
-      if (input.length() > 1) {
-        char action = input.charAt(1);
-        if (action == 'o') {
-          sendGripperOpen();
-          Serial3.println("M>OK Go");
-        } else if (action == 'c') {
-          sendGripperClose();
-          Serial3.println("M>OK Gc");
-        } else if (action == 's') {
-          sendGripperStop();
-          Serial3.println("M>OK Gs");
-        }
+      if (in.length() > 1) {
+        char a = in.charAt(1);
+        if      (a == 'o') { sendGripperOpen();  Serial3.println("M>OK Go"); }
+        else if (a == 'c') { sendGripperClose(); Serial3.println("M>OK Gc"); }
+        else if (a == 's') { sendGripperStop();  Serial3.println("M>OK Gs"); }
       }
       break;
     }
   }
 }
 
-/* ==========================
-   Setup
-   ========================== */
+/* ═══════════════════════════════════════
+   SETUP
+   ═══════════════════════════════════════ */
 void setup() {
   Serial.begin(115200);
   Serial3.begin(115200);
   Serial3.setTimeout(10);
 
+  // Drive motor interrupts
   attachInterrupt(motor_L1.getIntNum(), isr_L1, RISING);
   attachInterrupt(motor_L2.getIntNum(), isr_L2, RISING);
   attachInterrupt(motor_R1.getIntNum(), isr_R1, RISING);
   attachInterrupt(motor_R2.getIntNum(), isr_R2, RISING);
 
-  //Set PWM 8KHz
+  // PWM 8 KHz
   TCCR1A = _BV(WGM10);
   TCCR1B = _BV(CS11) | _BV(WGM12);
   TCCR2A = _BV(WGM21) | _BV(WGM20);
   TCCR2B = _BV(CS21);
 
-  MeEncoderOnBoard* motors[] = {&motor_L1, &motor_L2, &motor_R1, &motor_R2};
+  // Init drive motors
+  MeEncoderOnBoard* m[] = {&motor_L1, &motor_L2, &motor_R1, &motor_R2};
   for (int i = 0; i < 4; i++) {
-    motors[i]->setPulse(7);
-    motors[i]->setRatio(26.9);
-    motors[i]->setPosPid(1.8, 0, 1.2);
-    motors[i]->setSpeedPid(0.18, 0, 0);
+    m[i]->setPulse(7);
+    m[i]->setRatio(26.9);
+    m[i]->setPosPid(1.8, 0, 1.2);
+    m[i]->setSpeedPid(0.18, 0, 0);
   }
 
-  delay(100);
-  updateLeds(true);
+  // Init LEDs – default blue
+  setLed(1, 0, 0, 255);
+  setLed(2, 0, 0, 255);
+
   Serial.println("Master ready");
 }
 
-/* ==========================
-   Main Loop
-   ========================== */
+/* ═══════════════════════════════════════
+   MAIN LOOP
+   ═══════════════════════════════════════ */
 void loop() {
-  // Flicker turn-signal LEDs (only sends when state changes)
-  if (turningLeft || turningRight) {
-    updateLeds(false);
-  }
+  // Turn-signal flicker
+  updateTurnSignals(false);
+
+  // LED smooth fades
+  updateFades();
 
   // ── Serial3 (Bluetooth / shared bus) ──
   if (Serial3.available()) {
-    String input = Serial3.readStringUntil('\n');
-    input.trim();
-
-    if (input.startsWith("M:")) {
-      processCommand(input.substring(2));
-    }
-    // S: messages are for the Slave → ignore
-    // S> responses are from the Slave → relay to USB for debugging
-    if (input.startsWith("S>")) {
-      Serial.println("[Slave] " + input.substring(2));
-    }
+    String in = Serial3.readStringUntil('\n');
+    in.trim();
+    if      (in.startsWith("M:")) processCommand(in.substring(2));
+    else if (in.startsWith("S>")) Serial.println("[Slave] " + in.substring(2));
   }
 
-  // ── USB Serial (debug console) ──
+  // ── USB Serial (debug) ──
   if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-
-    if (input.startsWith("S:")) {
-      // Forward directly to slave
-      Serial3.println(input);
-    } else if (input.startsWith("M:")) {
-      processCommand(input.substring(2));
-    } else {
-      // No prefix → treat as master command
-      processCommand(input);
-    }
+    String in = Serial.readStringUntil('\n');
+    in.trim();
+    if      (in.startsWith("S:")) Serial3.println(in);           // forward to slave
+    else if (in.startsWith("M:")) processCommand(in.substring(2));
+    else                          processCommand(in);             // no prefix → master
   }
 
-  // PID loops must always run
+  // PID loops
   motor_L1.loop();
   motor_L2.loop();
   motor_R1.loop();
