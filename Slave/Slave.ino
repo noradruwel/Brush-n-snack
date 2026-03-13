@@ -16,7 +16,7 @@ MeMegaPiDCMotor gripper(PORT4A);
    ═══════════════════════════════════════ */
 const int ARM_SPEED     = 200;   // default arm speed
 const int GRIPPER_SPEED = 100;
-const unsigned long GRIPPER_MAX_RUN_MS = 10000;
+const unsigned long GRIPPER_MAX_RUN_MS = 5000;
 
 bool gripperRunning = false;
 unsigned long gripperStartMs = 0;
@@ -60,13 +60,13 @@ void stopAll() {
    GRIPPER HELPERS
    ═══════════════════════════════════════ */
 void gripperOpen()  {
-  gripper.run( GRIPPER_SPEED);
+  gripper.run(-GRIPPER_SPEED);
   gripperRunning = true;
   gripperStartMs = millis();
 }
 
 void gripperClose() {
-  gripper.run(-GRIPPER_SPEED);
+  gripper.run( GRIPPER_SPEED);
   gripperRunning = true;
   gripperStartMs = millis();
 }
