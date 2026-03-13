@@ -16,6 +16,10 @@ MeMegaPiDCMotor gripper(PORT4A);
    ═══════════════════════════════════════ */
 const int ARM_SPEED     = 200;   // default arm speed
 const int GRIPPER_SPEED = 100;
+const unsigned long GRIPPER_MAX_RUN_MS = 10000;
+
+bool gripperRunning = false;
+unsigned long gripperStartMs = 0;
 
 /* ═══════════════════════════════════════
    INTERRUPT SERVICE ROUTINES
@@ -23,6 +27,10 @@ const int GRIPPER_SPEED = 100;
 void isr_Arm1() { digitalRead(arm1.getPortB()) == 0 ? arm1.pulsePosMinus() : arm1.pulsePosPlus(); }
 void isr_Arm2() { digitalRead(arm2.getPortB()) == 0 ? arm2.pulsePosMinus() : arm2.pulsePosPlus(); }
 void isr_Arm3() { digitalRead(arm3.getPortB()) == 0 ? arm3.pulsePosMinus() : arm3.pulsePosPlus(); }
+
+void gripperOpen();
+void gripperClose();
+void gripperStop();
 
 /* ═══════════════════════════════════════
    ARM HELPERS
@@ -45,15 +53,28 @@ void stopAll() {
   arm1.setMotorPwm(0);
   arm2.setMotorPwm(0);
   arm3.setMotorPwm(0);
-  gripper.stop();
+  gripperStop();
 }
 
 /* ═══════════════════════════════════════
    GRIPPER HELPERS
    ═══════════════════════════════════════ */
-void gripperOpen()  { gripper.run( GRIPPER_SPEED); }
-void gripperClose() { gripper.run(-GRIPPER_SPEED); }
-void gripperStop()  { gripper.stop(); }
+void gripperOpen()  {
+  gripper.run( GRIPPER_SPEED);
+  gripperRunning = true;
+  gripperStartMs = millis();
+}
+
+void gripperClose() {
+  gripper.run(-GRIPPER_SPEED);
+  gripperRunning = true;
+  gripperStartMs = millis();
+}
+
+void gripperStop()  {
+  gripper.stop();
+  gripperRunning = false;
+}
 
 /* ═══════════════════════════════════════
    COMMAND PROCESSING
@@ -155,4 +176,10 @@ void loop() {
   arm1.loop();
   arm2.loop();
   arm3.loop();
+
+  // Auto-stop gripper after fixed run window to avoid stalling at limits.
+  if (gripperRunning && (millis() - gripperStartMs >= GRIPPER_MAX_RUN_MS)) {
+    gripperStop();
+    Serial.println("[Slave] Gripper auto-stopped");
+  }
 }

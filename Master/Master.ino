@@ -4,31 +4,39 @@
    HARDWARE
    ═══════════════════════════════════════ */
 // Drive motors (encoder)
-MeEncoderOnBoard motor_L1(SLOT4);   // Left front
-MeEncoderOnBoard motor_L2(SLOT2);   // Left rear
-MeEncoderOnBoard motor_R1(SLOT3);   // Right front
-MeEncoderOnBoard motor_R2(SLOT1);   // Right rear
+MeEncoderOnBoard motor_L1(SLOT2);   // Left front
+MeEncoderOnBoard motor_L2(SLOT1);   // Left rear
+MeEncoderOnBoard motor_R1(SLOT4);   // Right front
+MeEncoderOnBoard motor_R2(SLOT3);   // Right rearb
 
 // LED strips (directly on Master)
 MeRGBLed led1(PORT_5);              // Left  – 4 LEDs
-MeRGBLed led2(PORT_6);              // Right – 4 LEDs
+MeRGBLed led2(PORT_8);              // Right – 4 LEDs
 
 /* ═══════════════════════════════════════
    CONSTANTS
    ═══════════════════════════════════════ */
 const int    DRIVE_SPEED       = 300;
 const int    NUM_LEDS          = 4;
-const unsigned long FLICKER_MS = 200;
-const unsigned long FADE_MS    = 10;   // ms per color step
+const unsigned long TURN_FADE_MS = 12;
+const int TURN_STEP = 8;
+const int TURN_MIN_BRIGHTNESS = 20;
+const unsigned long FADE_MS    = 30;   // ms per color step
 
 /* ═══════════════════════════════════════
    STATE
    ═══════════════════════════════════════ */
+// Drive position accumulators (incremental movement)
+long  posL = 0;           // absolute target for L motors
+long  posR = 0;           // absolute target for R motors (already accounts for inversion)
+
 // Turn signals
 bool  turningLeft   = false;
 bool  turningRight  = false;
-bool  flickerState  = false;
-unsigned long lastFlicker = 0;
+int   turnBrightness = 0;
+int   turnDir = 1;
+unsigned long lastTurnFade = 0;
+byte  turnColor[3] = {255, 170, 0};   // warm amber/yellow
 
 // LED smooth-fade
 byte  curColor [2][3] = { {0,0,255}, {0,0,255} };
@@ -73,6 +81,10 @@ void applyLed(byte conn, byte r, byte g, byte b) {
   curColor[conn - 1][2] = b;
 }
 
+byte scaleByBrightness(byte base, int brightness) {
+  return (byte)(((int)base * brightness) / 255);
+}
+
 // Instant set (turn signals / direct command)
 void setLed(byte conn, byte r, byte g, byte b) {
   applyLed(conn, r, g, b);
@@ -89,6 +101,7 @@ void fadeLedTo(byte conn, byte r, byte g, byte b) {
 }
 
 void updateFades() {
+  if (turningLeft || turningRight) return;   // turn signals take full LED control
   unsigned long now = millis();
   if (now - lastFade < FADE_MS) return;
   lastFade = now;
@@ -112,24 +125,33 @@ void updateFades() {
 void updateTurnSignals(bool force) {
   if (!force && !turningLeft && !turningRight) return;
 
-  bool tick = false;
   if (turningLeft || turningRight) {
     unsigned long now = millis();
-    if (now - lastFlicker >= FLICKER_MS) {
-      flickerState = !flickerState;
-      lastFlicker = now;
-      tick = true;
+    if (force || (now - lastTurnFade >= TURN_FADE_MS)) {
+      lastTurnFade = now;
+      turnBrightness += (turnDir * TURN_STEP);
+      if (turnBrightness >= 255) { turnBrightness = 255; turnDir = -1; }
+      if (turnBrightness <= TURN_MIN_BRIGHTNESS)  { turnBrightness = TURN_MIN_BRIGHTNESS; turnDir = 1; }
+    } else {
+      return;
     }
   }
-  if (!force && !tick) return;
 
   if (turningLeft) {
-    setLed(1, flickerState ? 255 : 0, flickerState ? 255 : 0, 0);
+    setLed(1,
+           scaleByBrightness(turnColor[0], turnBrightness),
+           scaleByBrightness(turnColor[1], turnBrightness),
+           scaleByBrightness(turnColor[2], turnBrightness));
     setLed(2, 0, 0, 255);
   } else if (turningRight) {
     setLed(1, 0, 0, 255);
-    setLed(2, flickerState ? 255 : 0, flickerState ? 255 : 0, 0);
+    setLed(2,
+           scaleByBrightness(turnColor[0], turnBrightness),
+           scaleByBrightness(turnColor[1], turnBrightness),
+           scaleByBrightness(turnColor[2], turnBrightness));
   } else {
+    turnBrightness = 0;
+    turnDir = 1;
     setLed(1, 0, 0, 255);
     setLed(2, 0, 0, 255);
   }
@@ -138,23 +160,29 @@ void updateTurnSignals(bool force) {
 /* ═══════════════════════════════════════
    DRIVE LOGIC  (moveTo position-based)
    ═══════════════════════════════════════ */
-void moveDrive(long pos, int spd) {
+// delta > 0 = forward, delta < 0 = backward
+void moveDrive(long delta, int spd) {
   turningLeft = turningRight = false;
   updateTurnSignals(true);
-  motor_L1.moveTo(-pos, spd);
-  motor_L2.moveTo(-pos, spd);
-  motor_R1.moveTo( pos, spd);
-  motor_R2.moveTo( pos, spd);
+  posL += delta;
+  posR -= delta;   // R motors are physically mirrored: negate for same real-world direction
+  motor_L1.moveTo(posL, spd);
+  motor_L2.moveTo(posL, spd);
+  motor_R1.moveTo(posR, spd);
+  motor_R2.moveTo(posR, spd);
 }
 
-void turnDrive(long pos, int spd) {
-  turningLeft  = (pos < 0);
-  turningRight = (pos > 0);
+// delta > 0 = right, delta < 0 = left
+void turnDrive(long delta, int spd) {
+  turningLeft  = (delta < 0);
+  turningRight = (delta > 0);
   updateTurnSignals(true);
-  motor_L1.moveTo(pos, spd);
-  motor_L2.moveTo(pos, spd);
-  motor_R1.moveTo(pos, spd);
-  motor_R2.moveTo(pos, spd);
+  posL -= delta;
+  posR -= delta;   // negated: corrects physical turn direction
+  motor_L1.moveTo(posL, spd);
+  motor_L2.moveTo(posL, spd);
+  motor_R1.moveTo(posR, spd);
+  motor_R2.moveTo(posR, spd);
 }
 
 void stopDrive() {
@@ -199,6 +227,17 @@ void processCommand(const String &in) {
         byte conn = in.substring(1, p1).toInt();
         byte r = in.substring(p1+1, p2).toInt(), g = in.substring(p2+1, p3).toInt(), b = in.substring(p3+1).toInt();
         if (conn == 1 || conn == 2) { setLed(conn, r, g, b); Serial3.println("M>OK D" + String(conn)); }
+      }
+      break;
+    }
+    case 'T': {  // Turn color: T<R>,<G>,<B>
+      int p1 = in.indexOf(','), p2 = in.indexOf(',', p1+1);
+      if (p1 > 0 && p2 > p1) {
+        turnColor[0] = in.substring(1, p1).toInt();
+        turnColor[1] = in.substring(p1+1, p2).toInt();
+        turnColor[2] = in.substring(p2+1).toInt();
+        Serial3.println("M>OK T" + String(turnColor[0]) + "," + String(turnColor[1]) + "," + String(turnColor[2]));
+        updateTurnSignals(true);
       }
       break;
     }
@@ -303,4 +342,13 @@ void loop() {
   motor_L2.loop();
   motor_R1.loop();
   motor_R2.loop();
+
+  // Auto-clear turn signals once motors have settled at target
+  if (turningLeft || turningRight) {
+    if (abs(motor_L1.getCurPos() - posL) < 20 &&
+        abs(motor_R1.getCurPos() - posR) < 20) {
+      turningLeft = turningRight = false;
+      updateTurnSignals(true);   // sets both LEDs back to blue
+    }
+  }
 }
