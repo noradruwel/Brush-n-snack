@@ -7,9 +7,9 @@
     */
 
     // ===== Hardware =====
-    MeEncoderOnBoard arm1(SLOT1);  // Base rotation
-    MeEncoderOnBoard arm2(SLOT2);  // Shoulder
-    MeEncoderOnBoard arm3(SLOT3);  // Elbow
+    MeEncoderOnBoard arm1(SLOT1);  // Wrist motor
+    MeEncoderOnBoard arm2(SLOT2);  // Elbow motor
+    MeEncoderOnBoard arm3(SLOT3);  // Axis rotation motor
     MeMegaPiDCMotor gripper(PORT4A);
 
     // ===== Constants =====

@@ -40,48 +40,38 @@ Each command is one line ending with a newline.
 
 You can send commands as plain form (example: F360) or prefixed form (example: M:F360).
 
-Drive:
-
-- F<steps>: move forward
-- B<steps>: move backward
-- L or L<steps>: turn left (default 360 if no value)
-- R or R<steps>: turn right (default 360 if no value)
-- x: stop drive motors
-
-LED and turn-signal behavior:
-
-- N<R>,<G>,<B>: set default cruise color
-- T<R>,<G>,<B>: set turn signal color
-- Q0 or Q1: rainbow mode off/on (fixed fast per-pixel rainbow effect)
-
-Typical responses from Master on Serial3:
-
-- M>OK F360
-- M>OK STOP
-- M>OK N0,0,255
+| Command | Example | What it does | Typical response |
+|---|---|---|---|
+| `F<steps>` | `F360` or `M:F360` | Drive forward by encoder steps | `M>OK F360` |
+| `B<steps>` | `B360` or `M:B360` | Drive backward by encoder steps | `M>OK B360` |
+| `L` / `L<steps>` | `L` or `M:L180` | Turn left (default 360 if omitted) | `M>OK L` |
+| `R` / `R<steps>` | `R` or `M:R180` | Turn right (default 360 if omitted) | `M>OK R` |
+| `x` | `x` or `M:x` | Stop drive motors immediately | `M>OK STOP` |
+| `N<R>,<G>,<B>` | `N0,0,255` | Set default cruise color for both light rings | `M>OK N0,0,255` |
+| `T<R>,<G>,<B>` | `T255,170,0` | Set turn-signal color | `M>OK T255,170,0` |
+| `Q0` / `Q1` | `Q1` | Rainbow mode off/on (fixed fast per-pixel effect) | `M>OK Q1` |
 
 ## Slave command reference
 
 You can send commands as plain form (example: A1100) or prefixed form (example: S:A1100).
 
-Arm:
+| Command | Example | What it does | Typical response |
+|---|---|---|---|
+| `A<slot><delta>` | `A1100`, `S:A2-150` | Move arm target by delta on selected slot | `S>OK A1`, `S>OK A2` |
+| `Go` | `Go` or `S:Go` | Open gripper | `S>OK Go` |
+| `Gc` | `Gc` or `S:Gc` | Close gripper | `S>OK Gc` |
+| `Gs` | `Gs` or `S:Gs` | Stop gripper motor | `S>OK Gs` |
+| `x` | `x` or `S:x` | Stop all arm motors and gripper | `S>OK STOP` |
 
-- A<slot><delta>: move arm motor target by delta
-- Slots: 1 (base), 2 (shoulder), 3 (elbow)
-- Examples: A1100, A2-150
+Arm slot mapping:
 
-Gripper:
+| Slot | Motor |
+|---|---|
+| `1` | Wrist motor |
+| `2` | Elbow motor |
+| `3` | Axis rotation motor |
 
-- Go: open gripper
-- Gc: close gripper
-- Gs: stop gripper
-- x: stop all arm motors and gripper
-
-Typical responses from Slave on Serial3:
-
-- S>OK A1
-- S>OK Go
-- S>OK STOP
+This mapping reflects the current physical build wiring.
 
 ## Wiring and communication notes
 
