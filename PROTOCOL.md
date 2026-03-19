@@ -68,7 +68,7 @@ Each device only processes its own prefix and ignores the rest.
 | `M:x`                     | `M:x`             | Stop all drive motors                      |
 | `M:C<c>,<R>,<G>,<B>`      | `M:C1,255,0,0`   | Smooth LED fade on connector `c` (1-2)     |
 | `M:D<c>,<R>,<G>,<B>`      | `M:D2,0,255,0`   | Direct/instant LED set on connector `c`    |
-| `M:A<s>,<pos>,<spd>`      | `M:A1,360,200`   | Arm motor `s` (1-3) moveTo position at speed |
+| `M:A<s><delta>`           | `M:A1100`        | Arm motor `s` (1-3): add `delta` to current target (default speed) |
 | `M:Ax`                    | `M:Ax`            | Stop all arms + gripper (forwarded)        |
 | `M:Go`                    | `M:Go`            | Open gripper (forwarded)                   |
 | `M:Gc`                    | `M:Gc`            | Close gripper (forwarded)                  |
@@ -84,7 +84,7 @@ Sent by phone directly or by Master internally.
 
 | Command                   | Example           | Description                                |
 |---------------------------|-------------------|--------------------------------------------|
-| `S:A<s>,<pos>,<spd>`      | `S:A2,-720,150`  | Arm motor `s` (1-3) moveTo position at speed |
+| `S:A<s><delta>`           | `S:A2-150`       | Arm motor `s` (1-3): add `delta` to current target (default speed) |
 | `S:Go`                    | `S:Go`            | Open gripper (DC motor forward)            |
 | `S:Gc`                    | `S:Gc`            | Close gripper (DC motor backward)          |
 | `S:Gs`                    | `S:Gs`            | Stop gripper                               |
@@ -116,6 +116,16 @@ Sent by phone directly or by Master internally.
 
 ---
 
+## Arm Protocol Notes
+
+- Compact arm commands use this pattern: `A<motor><value>`.
+- The first character after `A` is always the arm motor number (`1`, `2`, or `3`).
+- The remaining characters are parsed as a signed integer delta (`+` optional, `-` supported).
+- Example: `M:A1100` means motor `1` target position `+= 100`.
+- Example: `M:A2-250` means motor `2` target position `-= 250`.
+
+---
+
 ## Turn-Signal Behavior
 
 Automatic during turns (Master handles LEDs locally):
@@ -142,11 +152,11 @@ Uses direct LED set internally. Resets to blue when turn ends.
 ### Master
 - No prefix → Master command (e.g. `F1800`)
 - `M:F1800` → Master command
-- `S:A1,360,200` → forwarded to Slave
+- `S:A1100` → forwarded to Slave
 
 ### Slave
-- No prefix → Slave command (e.g. `A1,360,200`)
-- `S:A1,360,200` → Slave command
+- No prefix → Slave command (e.g. `A1100`)
+- `S:A1100` → Slave command
 - `M:F1800` → forwarded to Master
 
 `S>` responses appear on Master USB as `[Slave] …`  
@@ -164,11 +174,11 @@ Phone sends:    M:L              → Turn left (default 360)
 Master replies: M>OK L
                                   (left LEDs flicker yellow)
 
-Phone sends:    M:A1,360,200     → Arm motor 1 to position 360 at speed 200
+Phone sends:    M:A1100          → Arm motor 1 target +100 (default speed)
 Master replies: M>OK A1
 Slave replies:  S>OK A1
 
-Phone sends:    M:A2,-720,150    → Arm motor 2 to position -720 at speed 150
+Phone sends:    M:A2-150         → Arm motor 2 target -150 (default speed)
 Master replies: M>OK A2
 Slave replies:  S>OK A2
 

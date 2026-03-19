@@ -56,9 +56,9 @@ void isr_R2() { digitalRead(motor_R2.getPortB()) == 0 ? motor_R2.pulsePosMinus()
    ═══════════════════════════════════════ */
 void sendSlave(const String &cmd) { Serial3.println("S:" + cmd); }
 
-// Arm: moveTo position at speed
-void sendArmMoveTo(int slot, long pos, int spd) {
-  sendSlave("A" + String(slot) + "," + String(pos) + "," + String(spd));
+// Arm: compact delta protocol (A<slot><deltaPos>)
+void sendArmDelta(int slot, long deltaPos) {
+  sendSlave("A" + String(slot) + String(deltaPos));
 }
 
 // Arm: stop all + gripper
@@ -247,16 +247,12 @@ void processCommand(const String &in) {
       if (in.length() > 1 && in.charAt(1) == 'x') {
         sendArmStopAll();
         Serial3.println("M>OK Ax");
-      } else {
-        // A<slot>,<position>,<speed>
-        int c1 = in.indexOf(','), c2 = in.indexOf(',', c1+1);
-        if (c1 > 0 && c2 > c1) {
-          int  slot = in.substring(1, c1).toInt();
-          long pos  = atol(in.substring(c1+1, c2).c_str());
-          int  spd  = in.substring(c2+1).toInt();
-          sendArmMoveTo(slot, pos, spd);
-          Serial3.println("M>OK A" + String(slot));
-        }
+      } else if (in.length() >= 3 && in.charAt(1) >= '1' && in.charAt(1) <= '3') {
+        // Only format: A<slot><deltaPos>, e.g. A1100 or A2-250
+        int slot = in.charAt(1) - '0';
+        long delta = atol(in.substring(2).c_str());
+        sendArmDelta(slot, delta);
+        Serial3.println("M>OK A" + String(slot));
       }
       break;
     }

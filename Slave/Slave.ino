@@ -20,12 +20,14 @@ const unsigned long GRIPPER_MAX_RUN_MS = 5000;
 
 bool gripperRunning = false;
 unsigned long gripperStartMs = 0;
+long armTargets[3] = {0, 0, 0};
 
 /* ═══════════════════════════════════════
    INTERRUPT SERVICE ROUTINES
    ═══════════════════════════════════════ */
 void isr_Arm1() { digitalRead(arm1.getPortB()) == 0 ? arm1.pulsePosMinus() : arm1.pulsePosPlus(); }
-void isr_Arm2() { digitalRead(arm2.getPortB()) == 0 ? arm2.pulsePosMinus() : arm2.pulsePosPlus(); }
+// SLOT2 encoder channels are physically swapped on the MeMegaPi PCB — flip direction to compensate
+void isr_Arm2() { digitalRead(arm2.getPortB()) == 0 ? arm2.pulsePosPlus() : arm2.pulsePosMinus(); }
 void isr_Arm3() { digitalRead(arm3.getPortB()) == 0 ? arm3.pulsePosMinus() : arm3.pulsePosPlus(); }
 
 void gripperOpen();
@@ -46,7 +48,17 @@ MeEncoderOnBoard* getArm(int slot) {
 
 void armMoveTo(int slot, long pos, int spd) {
   MeEncoderOnBoard* m = getArm(slot);
-  if (m) m->moveTo(pos, (float)spd);
+  if (m) {
+    armTargets[slot - 1] = pos;
+    m->moveTo(pos, (float)spd);
+  }
+}
+
+// moveDrive-style helper: add delta on top of stored target
+void armMoveBy(int slot, long delta, int spd) {
+  if (slot < 1 || slot > 3) return;
+  long target = armTargets[slot - 1] + delta;
+  armMoveTo(slot, target, spd);
 }
 
 void stopAll() {
@@ -86,17 +98,14 @@ void processCommand(const String &in) {
 
   switch (cmd) {
 
-    /* ── Arm moveTo: A<slot>,<position>,<speed> ── */
+    /* ── Arm moveBy: A<slot><deltaPos> ── */
     case 'A': {
-      int c1 = in.indexOf(','), c2 = in.indexOf(',', c1 + 1);
-      if (c1 > 0 && c2 > c1) {
-        int  slot = in.substring(1, c1).toInt();
-        long pos  = atol(in.substring(c1 + 1, c2).c_str());
-        int  spd  = in.substring(c2 + 1).toInt();
-        if (slot >= 1 && slot <= 3) {
-          armMoveTo(slot, pos, spd);
-          Serial3.println("S>OK A" + String(slot));
-        }
+      if (in.length() >= 3 && in.charAt(1) >= '1' && in.charAt(1) <= '3') {
+        // Only format: A<slot><deltaPos>, e.g. A1100 or A2-250
+        int slot = in.charAt(1) - '0';
+        long delta = atol(in.substring(2).c_str());
+        armMoveBy(slot, delta, ARM_SPEED);
+        Serial3.println("S>OK A" + String(slot));
       }
       break;
     }
