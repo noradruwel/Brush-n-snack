@@ -1,122 +1,123 @@
-# Brush-n-snack
+# Brush-n-Snack
 
-Arduino/MegaPi project with a **Master** and **Slave** board.
+Brush-n-Snack uses two MegaPi boards:
 
-- `Master/` contains driving logic (wheels) and command parsing.
-- `Slave/` contains arm motor and LED control.
-- `dev/` contains Bluetooth bridge test sketches only.
+- Master board: drivetrain + two 4-LED light rings
+- Slave board: arm joints + gripper
 
-## Bridge-only approach
+This README is now the single source of truth for setup and commands.
 
-This repository uses the Android app **Bluetooth Bridge** exclusively for test traffic:
+## Repo layout
 
-- https://sites.google.com/view/communication-utilities/bridge-user-guide
+- [master.ino](master.ino): current standalone Master firmware
+- [slave.ino](slave.ino): current standalone Slave firmware
+- [dev](dev): older test sketches and Python tooling for bridge/testing workflows
 
-Older test documentation outside the bridge flow was intentionally removed.
+## How the current firmware works
 
-## `dev/` folder contents
+The current root sketches are standalone:
 
-Only these files are kept in `dev/`:
+- [master.ino](master.ino) controls only driving and LEDs.
+- [slave.ino](slave.ino) controls only arm and gripper.
+- Both accept line-based text commands over Serial3 (Bluetooth) and Serial (USB).
 
-- `Master_BT_Test.ino`
-- `Slave_BT_Test.ino`
-- `Master_BT_Motor_Ultrasonic_Test.ino`
-- `Slave_BT_Motor_Ultrasonic_Test.ino`
+Each command is one line ending with a newline.
 
-## Setup: Master ↔ Bridge ↔ Slave
+## Quick start
 
-1. Use the onboard Bluetooth interface on both MegaPi boards (no external Bluetooth wiring required).
-2. Upload:
-	- `dev/Master_BT_Test.ino` to the Master board
-	- `dev/Slave_BT_Test.ino` to the Slave board
-3. Open Serial Monitor on both boards at `115200`.
-4. Open Bluetooth Bridge on Android and create two connections:
-	- Device A = Master module
-	- Device B = Slave module
-5. Enable retransmission between A and B.
-6. Verify status **Bridge active**.
-7. From Master, send: `HELLO`, `TEST`, `ARM100`, `STOP`.
+1. Flash [master.ino](master.ino) to the Master MegaPi.
+2. Flash [slave.ino](slave.ino) to the Slave MegaPi.
+3. Open Serial Monitor (115200 baud) on each board.
+4. Send newline-terminated commands from Bluetooth app, USB serial tool, or script.
 
-If everything works, Master will receive `[RECEIVED] ...` responses from Slave.
+## Serial settings
 
-## Extended `dev/` test (arm open/close + ultrasonic starter)
+- Baud rate: 115200
+- Command format: one command per line
+- Terminator: newline
 
-Use the new files when you want Bluetooth command tests that include arm open/close control and a starting point for ultrasonic sensors:
+## Master command reference
 
-- Upload `dev/Master_BT_Motor_Ultrasonic_Test.ino` to Master
-- Upload `dev/Slave_BT_Motor_Ultrasonic_Test.ino` to Slave
+You can send commands as plain form (example: F360) or prefixed form (example: M:F360).
 
-Commands supported in this extended flow:
+Drive:
 
-- `O` (open arm)
-- `C` (close arm)
-- `X` (stop arm)
-- `A120` / `A-120` (manual PWM override)
-- `D` (single distance read)
+- F<steps>: move forward
+- B<steps>: move backward
+- L or L<steps>: turn left (default 360 if no value)
+- R or R<steps>: turn right (default 360 if no value)
+- x: stop drive motors
 
-`Slave_BT_Motor_Ultrasonic_Test.ino` uses the MeMegaPi arm motor interface (`MeEncoderOnBoard`) and Makeblock ultrasonic library interface (`MeUltrasonicSensor`) like the official examples.
+LED and turn-signal behavior:
 
-In this dev test, commands are plain text lines over `Serial3` to keep debugging simple.
+- N<R>,<G>,<B>: set default cruise color
+- T<R>,<G>,<B>: set turn signal color
+- Q0 or Q1: rainbow mode off/on (fixed fast per-pixel rainbow effect)
 
-### Extended flow documentation (complete)
+Typical responses from Master on Serial3:
 
-Files:
+- M>OK F360
+- M>OK STOP
+- M>OK N0,0,255
 
-- `dev/Master_BT_Motor_Ultrasonic_Test.ino`
-- `dev/Slave_BT_Motor_Ultrasonic_Test.ino`
+## Slave command reference
 
-Serial settings:
+You can send commands as plain form (example: A1100) or prefixed form (example: S:A1100).
 
-- Master Serial Monitor: `115200`
-- Slave Serial Monitor: `115200`
-- Bluetooth (`Serial3`) on both boards: `115200`
+Arm:
 
-Message format:
+- A<slot><delta>: move arm motor target by delta
+- Slots: 1 (base), 2 (shoulder), 3 (elbow)
+- Examples: A1100, A2-150
 
-- One command per line (`\n` terminated), uppercase recommended.
-- Slave returns one response line per command.
+Gripper:
 
-Command table:
+- Go: open gripper
+- Gc: close gripper
+- Gs: stop gripper
+- x: stop all arm motors and gripper
 
-- `H` → response: `HELLO received`
-- `T` → response: `Test received - BT OK`
-- `O` → action: arm open at default PWM, response: `OK OPEN`
-- `C` → action: arm close at default PWM, response: `OK CLOSE`
-- `X` → action: arm stop, response: `OK STOP`
-- `A<number>` → action: set arm PWM (`-255..255`), response: `OK ARM <applied>`
-- `D` → response: `DIST <cm>`
+Typical responses from Slave on Serial3:
 
-Examples:
+- S>OK A1
+- S>OK Go
+- S>OK STOP
 
-- `A120` → `OK ARM 120`
-- `A-80` → `OK ARM -80`
-- `D` → `DIST 37`
+## Wiring and communication notes
 
-Motor control notes:
+- Keep both boards and Bluetooth links at the same baud rate.
+- Treat serial as a stream, not packets. Newline delimiters matter.
+- If command parsing seems flaky, first verify line endings in your sender.
 
-- The extended dev sketch uses `setTarPWM(...)` + `armMotor.loop()` for simple open/close testing.
-- `setPulse`, `setRatio`, and PID tuning are commonly used in speed/position control examples, but are intentionally omitted here to keep this PWM test minimal and easy to debug.
+## Safety behavior
 
-## Bridge settings (important)
+- Slave gripper has an automatic runtime timeout (currently 5 seconds) to prevent overrun.
+- Use x as emergency stop per board.
 
-- Set retransmission to **bidirectional** (A↔B).
-- Use text mode on the Traffic page for quick diagnostics.
-- Check line-break behavior in log settings (`new data` vs `CR/LF`) during command debugging.
-- If the app runs in the background, exclude it from battery optimization to avoid disconnects.
+## Developer tools in dev
 
-## Stability test
+The [dev](dev) folder is for experiments and convenience tools, not the main runtime firmware.
 
-1. Send `TEST` 20 times with a short pause between messages.
-2. Verify every request has a response.
-3. Verify both directions (Master→Slave and Slave→Master).
-4. Restart only the app and confirm reconnect + bridge active.
+- [dev/web_controller.py](dev/web_controller.py): browser UI that sends serial commands
+- [dev/bluetooth_arduino_cli.py](dev/bluetooth_arduino_cli.py): RFCOMM terminal CLI
+- test sketches for Bluetooth and ultrasonic bring-up
 
-## Important note from the Bridge guide
+Important: some dev sketches/scripts target older command variants. If behavior differs, trust [master.ino](master.ino) and [slave.ino](slave.ino) as the current protocol.
 
-Serial data is a stream, not a guaranteed packet boundary. At higher speeds, messages may be split or merged. Keep commands simple and newline-terminated.
+## Common troubleshooting
 
-## Reference
+No response:
 
-Full guide:
+1. Confirm baud is 115200 everywhere.
+2. Confirm newline is sent with each command.
+3. Confirm you are sending Master commands to Master and Slave commands to Slave.
 
-- https://sites.google.com/view/communication-utilities/bridge-user-guide
+Movement/LED mismatch:
+
+1. Verify you are using the current root sketches.
+2. Power-cycle board after flashing.
+3. Test with a minimal command set first: F360, x, N0,0,255, A1100, Gs.
+
+## License
+
+See [LICENSE](LICENSE).
