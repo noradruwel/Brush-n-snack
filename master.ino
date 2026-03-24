@@ -13,6 +13,8 @@ MeEncoderOnBoard motor_R1(SLOT4);  // Right front
 MeEncoderOnBoard motor_R2(SLOT3);  // Right rear
 MeRGBLed led1(PORT_5);             // Left light ring (4 LEDs)
 MeRGBLed led2(PORT_8);             // Right light ring (4 LEDs)
+MeUltrasonicSensor ultraSensorLeft(PORT_6);
+MeUltrasonicSensor ultraSensorRight(PORT_7);
 
 // ===== Constants =====
 const long SERIAL_BAUD = 115200;
@@ -22,6 +24,8 @@ const int NUM_LEDS = 4;
 const int TURN_STEP = 10;
 const int TURN_MIN_BRIGHTNESS = 30;
 const unsigned long TURN_FADE_MS = 10;
+const int ULTRASONIC_STOP_CM = 15;
+const unsigned long ULTRASONIC_POLL_MS = 100;
 
 const unsigned long LED_RENDER_MS = 10;
 const unsigned long RAINBOW_STEP_MS = 8;  // fixed fast NeoPixel-style speed
@@ -46,6 +50,9 @@ int turnDir = 1;
 unsigned long lastTurnFadeMs = 0;
 
 unsigned long lastRenderMs = 0;
+unsigned long lastUltrasonicPollMs = 0;
+bool obstacleStopActive = false;
+bool obstacleStopNotified = false;
 
 MeEncoderOnBoard *driveMotors[] = {&motor_L1, &motor_L2, &motor_R1, &motor_R2};
 
@@ -108,20 +115,18 @@ void renderSolidRing(MeRGBLed &led, byte r, byte g, byte b) {
   }
 }
 
-void renderRainbowRing(MeRGBLed &led, byte sideOffset) {
+void renderRainbowRing(MeRGBLed &led) {
+  byte r, g, b;
+  wheelColor(rainbowHue, r, g, b);
   for (int i = 0; i < NUM_LEDS; i++) {
-    byte r, g, b;
-    // 4 LEDs around a ring: spread hues by quarter turns.
-    byte hue = (byte)(rainbowHue + sideOffset + (i * 64));
-    wheelColor(hue, r, g, b);
     setRingPixel(led, i, r, g, b);
   }
 }
 
 void renderCruiseRings() {
   if (rainbowEnabled) {
-    renderRainbowRing(led1, 0);
-    renderRainbowRing(led2, 32);
+    renderRainbowRing(led1);
+    renderRainbowRing(led2);
   } else {
     renderSolidRing(led1, defaultColor[0], defaultColor[1], defaultColor[2]);
     renderSolidRing(led2, defaultColor[0], defaultColor[1], defaultColor[2]);
@@ -214,10 +219,42 @@ void stopDrive() {
   turningLeft = false;
   turningRight = false;
 
+  // Keep software targets aligned to where the robot currently is.
+  posL = motor_L1.getCurPos();
+  posR = motor_R1.getCurPos();
+
   motor_L1.setMotorPwm(0);
   motor_L2.setMotorPwm(0);
   motor_R1.setMotorPwm(0);
   motor_R2.setMotorPwm(0);
+}
+
+bool isObstacleTooClose() {
+  if (millis() - lastUltrasonicPollMs < ULTRASONIC_POLL_MS) {
+    return obstacleStopActive;
+  }
+  lastUltrasonicPollMs = millis();
+
+  long leftCm = ultraSensorLeft.distanceCm();
+  long rightCm = ultraSensorRight.distanceCm();
+
+  bool leftBlocked = (leftCm > 0 && leftCm <= ULTRASONIC_STOP_CM);
+  bool rightBlocked = (rightCm > 0 && rightCm <= ULTRASONIC_STOP_CM);
+  obstacleStopActive = leftBlocked || rightBlocked;
+  return obstacleStopActive;
+}
+
+void autoStopOnObstacle() {
+  if (!isObstacleTooClose()) {
+    obstacleStopNotified = false;
+    return;
+  }
+
+  stopDrive();
+  if (!obstacleStopNotified) {
+    obstacleStopNotified = true;
+    replyMaster("M>SAFETY STOP ULTRASONIC");
+  }
 }
 
 void autoClearTurnWhenReached() {
@@ -281,6 +318,8 @@ void processCommand(const String &rawInput) {
   if (cmd == 'N') {
     byte rgb[3];
     if (!parseRgb(in, 1, rgb)) return;
+    // Custom cruise color should become active immediately and stay persistent.
+    rainbowEnabled = false;
     defaultColor[0] = rgb[0];
     defaultColor[1] = rgb[1];
     defaultColor[2] = rgb[2];
@@ -348,6 +387,8 @@ void setup() {
 void loop() {
   pollCommandStream(Serial3);
   pollCommandStream(Serial);
+
+  autoStopOnObstacle();
 
   for (int i = 0; i < 4; i++) {
     driveMotors[i]->loop();
