@@ -47,9 +47,14 @@ You can send commands as plain form (example: F360) or prefixed form (example: M
 | `L` / `L<steps>` | `L` or `M:L180` | Turn left (default 360 if omitted) | `M>OK L` |
 | `R` / `R<steps>` | `R` or `M:R180` | Turn right (default 360 if omitted) | `M>OK R` |
 | `x` | `x` or `M:x` | Stop drive motors immediately | `M>OK STOP` |
+| `V<speed>` | `V420` | Set drive speed for `F/B/L/R` (clamped to 80..600) | `M>OK V420` |
+| `J` | `J` | Run a short fast left-right dance routine | `M>OK J`, then `M>DONE J` |
 | `N<R>,<G>,<B>` | `N0,0,255` | Set default cruise color for both light rings (also exits rainbow mode) | `M>OK N0,0,255` |
+| `C<c>,<R>,<G>,<B>` | `C1,255,0,0` | Legacy LED command: set persistent cruise color for one ring (`c=1` left, `c=2` right) | `M>OK C1,255,0,0` |
+| `D<c>,<R>,<G>,<B>` | `D2,0,0,255` | Legacy LED command: set persistent cruise color for one ring (`c=1` left, `c=2` right) | `M>OK D2,0,0,255` |
 | `T<R>,<G>,<B>` | `T255,170,0` | Set turn-signal color | `M>OK T255,170,0` |
 | `Q0` / `Q1` | `Q1` | Rainbow mode off/on (fixed fast solid color across both rings) | `M>OK Q1` |
+| `U0` / `U1` | `U0` | Disable/enable ultrasonic safety auto-stop | `M>OK U0` |
 
 ## Slave command reference
 
@@ -78,12 +83,13 @@ This mapping reflects the current physical build wiring.
 - Keep both boards and Bluetooth links at the same baud rate.
 - Treat serial as a stream, not packets. Newline delimiters matter.
 - If command parsing seems flaky, first verify line endings in your sender.
-- Master ultrasonic sensors are on PORT_6 and PORT_7.
+- Master ultrasonic sensors: back on PORT_6, front on PORT_7.
 
 ## Safety behavior
 
 - Slave gripper has an automatic runtime timeout (currently 5 seconds) to prevent overrun.
-- Master automatically stops drive motors if ultrasonic distance on PORT_6 or PORT_7 is between 1 and 15 cm.
+- Master auto-stop always checks both ultrasonic sensors (1-15 cm): front on PORT_7 and back on PORT_6.
+- If either sensor detects too close, drive motors are stopped.
 - Ultrasonic check interval is 100 ms (module minimum measurement interval).
 - Use x as emergency stop per board.
 

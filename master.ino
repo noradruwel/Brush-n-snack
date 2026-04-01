@@ -13,12 +13,17 @@ MeEncoderOnBoard motor_R1(SLOT4);  // Right front
 MeEncoderOnBoard motor_R2(SLOT3);  // Right rear
 MeRGBLed led1(PORT_5);             // Left light ring (4 LEDs)
 MeRGBLed led2(PORT_8);             // Right light ring (4 LEDs)
-MeUltrasonicSensor ultraSensorLeft(PORT_6);
-MeUltrasonicSensor ultraSensorRight(PORT_7);
+MeUltrasonicSensor ultraSensorBack(PORT_6);
+MeUltrasonicSensor ultraSensorFront(PORT_7);
 
 // ===== Constants =====
 const long SERIAL_BAUD = 115200;
-const int DRIVE_SPEED = 300;
+const int DRIVE_SPEED_DEFAULT = 300;
+const int DRIVE_SPEED_MIN = 80;
+const int DRIVE_SPEED_MAX = 600;
+const int DANCE_SPEED_DEFAULT = 520;
+const int DANCE_SPEED_MIN = 180;
+const int DANCE_SPEED_MAX = 700;
 const int NUM_LEDS = 4;
 
 const int TURN_STEP = 10;
@@ -29,6 +34,9 @@ const unsigned long ULTRASONIC_POLL_MS = 100;
 
 const unsigned long LED_RENDER_MS = 10;
 const unsigned long RAINBOW_STEP_MS = 8;  // fixed fast NeoPixel-style speed
+const unsigned long DANCE_STEP_TIMEOUT_MS = 450;
+const int DANCE_STEP_COUNT = 8;
+const long DANCE_PATTERN[DANCE_STEP_COUNT] = {-120, 120, -160, 160, -120, 120, -200, 200};
 
 // ===== Motion state =====
 long posL = 0;
@@ -36,9 +44,15 @@ long posR = 0;
 
 bool turningLeft = false;
 bool turningRight = false;
+int driveSpeed = DRIVE_SPEED_DEFAULT;
+int danceSpeed = DANCE_SPEED_DEFAULT;
+bool danceActive = false;
+int danceStepIndex = 0;
+unsigned long danceStepStartMs = 0;
 
 // ===== LED state =====
-byte defaultColor[3] = {0, 0, 255};
+byte defaultColorLeft[3] = {0, 0, 255};
+byte defaultColorRight[3] = {0, 0, 255};
 byte turnColor[3] = {255, 170, 0};
 
 bool rainbowEnabled = false;
@@ -53,6 +67,9 @@ unsigned long lastRenderMs = 0;
 unsigned long lastUltrasonicPollMs = 0;
 bool obstacleStopActive = false;
 bool obstacleStopNotified = false;
+bool frontObstacleActive = false;
+bool backObstacleActive = false;
+bool ultrasonicEnabled = true;
 
 MeEncoderOnBoard *driveMotors[] = {&motor_L1, &motor_L2, &motor_R1, &motor_R2};
 
@@ -128,8 +145,8 @@ void renderCruiseRings() {
     renderRainbowRing(led1);
     renderRainbowRing(led2);
   } else {
-    renderSolidRing(led1, defaultColor[0], defaultColor[1], defaultColor[2]);
-    renderSolidRing(led2, defaultColor[0], defaultColor[1], defaultColor[2]);
+    renderSolidRing(led1, defaultColorLeft[0], defaultColorLeft[1], defaultColorLeft[2]);
+    renderSolidRing(led2, defaultColorRight[0], defaultColorRight[1], defaultColorRight[2]);
   }
 }
 
@@ -218,6 +235,8 @@ void turnDrive(long delta, int speed) {
 void stopDrive() {
   turningLeft = false;
   turningRight = false;
+  danceActive = false;
+  danceStepIndex = 0;
 
   // Keep software targets aligned to where the robot currently is.
   posL = motor_L1.getCurPos();
@@ -230,17 +249,27 @@ void stopDrive() {
 }
 
 bool isObstacleTooClose() {
+  if (!ultrasonicEnabled) {
+    frontObstacleActive = false;
+    backObstacleActive = false;
+    obstacleStopActive = false;
+    return false;
+  }
+
   if (millis() - lastUltrasonicPollMs < ULTRASONIC_POLL_MS) {
     return obstacleStopActive;
   }
   lastUltrasonicPollMs = millis();
 
-  long leftCm = ultraSensorLeft.distanceCm();
-  long rightCm = ultraSensorRight.distanceCm();
+  long frontCm = ultraSensorFront.distanceCm();
+  long backCm = ultraSensorBack.distanceCm();
 
-  bool leftBlocked = (leftCm > 0 && leftCm <= ULTRASONIC_STOP_CM);
-  bool rightBlocked = (rightCm > 0 && rightCm <= ULTRASONIC_STOP_CM);
-  obstacleStopActive = leftBlocked || rightBlocked;
+  frontObstacleActive = (frontCm > 0 && frontCm <= ULTRASONIC_STOP_CM);
+  backObstacleActive = (backCm > 0 && backCm <= ULTRASONIC_STOP_CM);
+
+  // Always enforce safety from both directions.
+  obstacleStopActive = frontObstacleActive || backObstacleActive;
+
   return obstacleStopActive;
 }
 
@@ -266,12 +295,52 @@ void autoClearTurnWhenReached() {
   }
 }
 
+bool isTurnTargetReached() {
+  return (abs(motor_L1.getCurPos() - posL) < 20 && abs(motor_R1.getCurPos() - posR) < 20);
+}
+
+void issueDanceStep() {
+  if (!danceActive) return;
+
+  if (danceStepIndex >= DANCE_STEP_COUNT) {
+    danceActive = false;
+    danceStepIndex = 0;
+    stopDrive();
+    replyMaster("M>DONE J");
+    return;
+  }
+
+  long delta = DANCE_PATTERN[danceStepIndex];
+  danceStepIndex++;
+  danceStepStartMs = millis();
+  turnDrive(delta, danceSpeed);
+}
+
+void startDance() {
+  danceActive = true;
+  danceStepIndex = 0;
+  issueDanceStep();
+}
+
+void updateDance() {
+  if (!danceActive) return;
+
+  if (isTurnTargetReached() || (millis() - danceStepStartMs > DANCE_STEP_TIMEOUT_MS)) {
+    issueDanceStep();
+  }
+}
+
 // ===== Command processing =====
 // Supported:
 // F<pos>, B<pos>, L[pos], R[pos], x
 // N<R>,<G>,<B> (default cruise color)
 // T<R>,<G>,<B> (turn indicator color)
 // Q<0|1> (rainbow off/on)
+// C<c>,<R>,<G>,<B> (legacy fade command; maps to persistent cruise color per ring)
+// D<c>,<R>,<G>,<B> (legacy instant command; maps to persistent cruise color per ring)
+// U<0|1> (ultrasonic safety stop off/on)
+// V<speed> (set drive speed, range 80..600)
+// J (run short dance routine)
 // Optional prefix accepted: M:
 void processCommand(const String &rawInput) {
   String in = rawInput;
@@ -282,29 +351,33 @@ void processCommand(const String &rawInput) {
   char cmd = in.charAt(0);
 
   if (cmd == 'F') {
+    danceActive = false;
     long dist = parseLongSuffix(in, 1, 0);
-    moveDrive(dist, DRIVE_SPEED);
+    moveDrive(dist, driveSpeed);
     replyMaster("M>OK F" + String(dist));
     return;
   }
 
   if (cmd == 'B') {
+    danceActive = false;
     long dist = parseLongSuffix(in, 1, 0);
-    moveDrive(-dist, DRIVE_SPEED);
+    moveDrive(-dist, driveSpeed);
     replyMaster("M>OK B" + String(dist));
     return;
   }
 
   if (cmd == 'L') {
+    danceActive = false;
     long amount = parseLongSuffix(in, 1, 0);
-    turnDrive((amount == 0) ? -360 : -amount, DRIVE_SPEED);
+    turnDrive((amount == 0) ? -360 : -amount, driveSpeed);
     replyMaster("M>OK L");
     return;
   }
 
   if (cmd == 'R') {
+    danceActive = false;
     long amount = parseLongSuffix(in, 1, 0);
-    turnDrive((amount == 0) ? 360 : amount, DRIVE_SPEED);
+    turnDrive((amount == 0) ? 360 : amount, driveSpeed);
     replyMaster("M>OK R");
     return;
   }
@@ -320,10 +393,13 @@ void processCommand(const String &rawInput) {
     if (!parseRgb(in, 1, rgb)) return;
     // Custom cruise color should become active immediately and stay persistent.
     rainbowEnabled = false;
-    defaultColor[0] = rgb[0];
-    defaultColor[1] = rgb[1];
-    defaultColor[2] = rgb[2];
-    replyMaster("M>OK N" + String(defaultColor[0]) + "," + String(defaultColor[1]) + "," + String(defaultColor[2]));
+    defaultColorLeft[0] = rgb[0];
+    defaultColorLeft[1] = rgb[1];
+    defaultColorLeft[2] = rgb[2];
+    defaultColorRight[0] = rgb[0];
+    defaultColorRight[1] = rgb[1];
+    defaultColorRight[2] = rgb[2];
+    replyMaster("M>OK N" + String(rgb[0]) + "," + String(rgb[1]) + "," + String(rgb[2]));
     return;
   }
 
@@ -340,6 +416,68 @@ void processCommand(const String &rawInput) {
   if (cmd == 'Q') {
     rainbowEnabled = (parseLongSuffix(in, 1, 0) != 0);
     replyMaster("M>OK Q" + String(rainbowEnabled ? 1 : 0));
+    return;
+  }
+
+  if (cmd == 'C' || cmd == 'D') {
+    int p1 = in.indexOf(',', 1);
+    int p2 = (p1 >= 0) ? in.indexOf(',', p1 + 1) : -1;
+    int p3 = (p2 >= 0) ? in.indexOf(',', p2 + 1) : -1;
+    if (p1 < 0 || p2 < 0 || p3 < 0) return;
+
+    int connector = in.substring(1, p1).toInt();
+    byte r = (byte)in.substring(p1 + 1, p2).toInt();
+    byte g = (byte)in.substring(p2 + 1, p3).toInt();
+    byte b = (byte)in.substring(p3 + 1).toInt();
+
+    rainbowEnabled = false;
+
+    if (connector == 1) {
+      defaultColorLeft[0] = r;
+      defaultColorLeft[1] = g;
+      defaultColorLeft[2] = b;
+    } else if (connector == 2) {
+      defaultColorRight[0] = r;
+      defaultColorRight[1] = g;
+      defaultColorRight[2] = b;
+    } else {
+      return;
+    }
+
+    replyMaster("M>OK " + String(cmd) + String(connector) + "," + String(r) + "," + String(g) + "," + String(b));
+    return;
+  }
+
+  if (cmd == 'U') {
+    ultrasonicEnabled = (parseLongSuffix(in, 1, 0) != 0);
+    if (!ultrasonicEnabled) {
+      obstacleStopActive = false;
+      obstacleStopNotified = false;
+      frontObstacleActive = false;
+      backObstacleActive = false;
+    }
+    replyMaster("M>OK U" + String(ultrasonicEnabled ? 1 : 0));
+    return;
+  }
+
+  if (cmd == 'V') {
+    long requested = parseLongSuffix(in, 1, driveSpeed);
+    if (requested < DRIVE_SPEED_MIN) requested = DRIVE_SPEED_MIN;
+    if (requested > DRIVE_SPEED_MAX) requested = DRIVE_SPEED_MAX;
+    driveSpeed = (int)requested;
+    if (danceSpeed < DANCE_SPEED_MIN) danceSpeed = DANCE_SPEED_MIN;
+    if (danceSpeed > DANCE_SPEED_MAX) danceSpeed = DANCE_SPEED_MAX;
+    replyMaster("M>OK V" + String(driveSpeed));
+    return;
+  }
+
+  if (cmd == 'J') {
+    if (obstacleStopActive) {
+      replyMaster("M>ERR J BLOCKED");
+      return;
+    }
+    startDance();
+    replyMaster("M>OK J");
     return;
   }
 }
@@ -389,6 +527,7 @@ void loop() {
   pollCommandStream(Serial);
 
   autoStopOnObstacle();
+  updateDance();
 
   for (int i = 0; i < 4; i++) {
     driveMotors[i]->loop();

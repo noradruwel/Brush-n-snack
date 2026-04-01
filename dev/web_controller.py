@@ -18,11 +18,14 @@ Master command protocol (sent over serial):
     L<steps>          turn left
     R<steps>          turn right
     x                 stop drive
+  V<speed>          set drive speed (80..600)
+  J                 quick dance
     A<slot><delta>    arm move (slot 1-3, delta encoder steps)
     Ax                arm stop all
     Go / Gc / Gs      gripper open / close / stop
     C<c>,<R>,<G>,<B>  LED fade  (c = 1 or 2)
     D<c>,<R>,<G>,<B>  LED instant set
+    U0 / U1            ultrasonic safety stop disable / enable
 """
 
 import argparse
@@ -236,6 +239,11 @@ _HTML = r"""<!DOCTYPE html>
       <label style="font-size:.8rem;color:var(--muted)">Steps per press: </label>
       <input type="number" id="driveSteps" value="360" style="width:80px">
     </div>
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="font-size:.8rem;color:var(--muted)">Drive speed: </label>
+      <input type="number" id="driveSpeed" value="300" min="80" max="600" style="width:90px">
+      <button onclick="setDriveSpeed()" style="font-size:.8rem">Apply</button>
+    </div>
     <div class="dpad">
       <div></div>
       <button onclick="drive('F')" title="Forward">&#x25B2;</button>
@@ -246,6 +254,9 @@ _HTML = r"""<!DOCTYPE html>
       <div></div>
       <button onclick="drive('B')" title="Backward">&#x25BC;</button>
       <div></div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;justify-content:center">
+      <button class="accent" onclick="startDance()">Dance</button>
     </div>
   </div>
 
@@ -310,6 +321,10 @@ _HTML = r"""<!DOCTYPE html>
       <input type="color" id="turnColor" value="#ffaa00" style="vertical-align:middle">
       <button onclick="setTurnColor()" style="margin-left:6px;font-size:.8rem">Apply</button>
     </div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="send('U1')" class="accent" style="font-size:.8rem">Ultrasonic ON</button>
+      <button onclick="send('U0')" style="font-size:.8rem">Ultrasonic OFF</button>
+    </div>
   </div>
 
   <!-- Custom command -->
@@ -356,6 +371,19 @@ function drive(dir) {
 function arm(slot, sign) {
   const delta = parseInt(document.getElementById('armDelta').value) || 150;
   send('A' + slot + (sign * delta));
+}
+
+function setDriveSpeed() {
+  let speed = parseInt(document.getElementById('driveSpeed').value);
+  if (!Number.isFinite(speed)) speed = 300;
+  if (speed < 80) speed = 80;
+  if (speed > 600) speed = 600;
+  document.getElementById('driveSpeed').value = speed;
+  send('V' + speed);
+}
+
+function startDance() {
+  send('J');
 }
 
 function hexToRgb(hex) {
@@ -461,6 +489,7 @@ document.addEventListener('keydown', e => {
     case ' ': send('x'); break;
     case 'o': send('Go'); break;
     case 'c': send('Gc'); break;
+    case 'j': startDance(); break;
   }
 });
 
